@@ -106,6 +106,8 @@ export const field=(label,content,help='')=>'<label class="field"><span>'+e(labe
 export const input=(name,value='',type='text',attr='')=>'<input type="'+type+'" name="'+e(name)+'" value="'+e(value)+'" '+attr+'>';
 export function questionField(q,answer,done=false,prefix='') {
   const name=prefix+q.key, required=q.required?'required':'';
+  if(q.type==='integer'&&q.min===1&&q.max===5) return '<fieldset class="rating-question"><legend>'+e(q.label)+'</legend><div class="rating-options">'+[1,2,3,4,5].map(value=>
+    '<label><input type="radio" name="'+e(name)+'" value="'+value+'" '+(answer===value?'checked ':'')+(done?'disabled':required)+'><span>'+value+'</span></label>').join('')+'</div>'+(q.help?'<p class="note">'+e(q.help)+'</p>':'')+'</fieldset>';
   if(q.type==='multichoice') return '<fieldset class="question-block"><legend>'+e(q.label)+(q.required?'（必填）':'')+'</legend>'+q.options.map(value=>
     '<label class="checkbox"><input type="checkbox" name="'+e(name)+'" value="'+e(value)+'" '+(answer?.includes(value)?'checked ':'')+(done?'disabled':'')+'>'+e(value)+'</label>').join('')+(q.help?'<p class="note">'+e(q.help)+'</p>':'')+'</fieldset>';
   return field(q.label,['integer','number'].includes(q.type)?input(name,answer??'','number','min="'+e(q.min)+'" max="'+e(q.max)+'" step="'+(q.type==='integer'?'1':'any')+'" '+(done?'readonly':required)):
@@ -120,7 +122,7 @@ export function questionAnswers(schema,data,prefix='') {
 }
 export function questionFields(schema,answers={},done=false,prefix='') {
   const skills=schema.filter(q=>/^(planning|leadership|communication|response)_(before|after)$/.test(q.key));
-  return schema.map(q=>skills.includes(q)?q===skills[0]?'<fieldset class="question-block"><legend>以下四項能力，參加前和參加後各幾分？（每項 1 至 5 分）</legend><div class="form-grid">'+skills.map(item=>questionField(item,answers[item.key],done,prefix)).join('')+'</div></fieldset>':'':questionField(q,answers[q.key],done,prefix)).join('');
+  return schema.map(q=>skills.includes(q)?q===skills[0]?'<fieldset class="question-block"><legend>以下四項能力，參加前和參加後各幾分？（每項 1 至 5 分）</legend><div class="form-grid skill-ratings">'+skills.map(item=>questionField(item,answers[item.key],done,prefix)).join('')+'</div></fieldset>':'':questionField(q,answers[q.key],done,prefix)).join('');
 }
 export const collectionTimeline=rows=>'<details class="card collection-timeline"><summary>資料收集時間軸</summary><ol>'+rows.map(row=>'<li><strong>'+e(row.title)+'</strong><span>'+e(row.time)+'</span><p>'+e(row.detail)+'</p></li>').join('')+'</ol><p class="note">問卷以已驗證手機對應的登入身分串接；變更手機後仍保留同一人的歷程。</p></details>';
 export const select=(name,options,attr='')=>'<select name="'+e(name)+'" '+attr+'>'+options+'</select>';
