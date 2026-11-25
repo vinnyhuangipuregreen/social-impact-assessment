@@ -1,0 +1,9 @@
+{
+  "regions": ["hnd1"],
+  "functions": {
+    "src/server.ts": {
+      "includeFiles": "{web,migrations}/**",
+      "maxDuration": 300
+    }
+  }
+}

@@ -1,7 +1,7 @@
-import { DatabaseSync } from 'node:sqlite';
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { all, exec, one, run, tx } from './database.ts';
+export { all, one, run, tx } from './database.ts';
 import { DAY, NOTICE, NOTICE_TEXT, PROGRAMS, STAGES, FOLLOW, iso, plannedWindow, questions, demand } from './domain.ts';
 
 export const demo = process.env.SIMP_DEMO !== '0';
@@ -27,56 +27,45 @@ export function open(value: string) {
   return Buffer.concat([cipher.update(content),cipher.final()]).toString('utf8');
 }
 
-const path = process.env.SIMP_DB || './var/simp.sqlite';
-if (path!==':memory:') mkdirSync(dirname(resolve(path)),{recursive:true,mode:0o700});
-export const db = new DatabaseSync(path);
-db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY);');
-export function tx<T>(work: ()=>T): T {
-  db.exec('BEGIN IMMEDIATE');
-  try { const result=work(); db.exec('COMMIT'); return result; }
-  catch(error) { db.exec('ROLLBACK'); throw error; }
-}
-export const one = (sql:string,...params:any[]): any => db.prepare(sql).get(...params);
-export const all = (sql:string,...params:any[]): any[] => db.prepare(sql).all(...params);
-export const run = (sql:string,...params:any[]) => db.prepare(sql).run(...params);
+await exec('CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY);');
 
 const folder=new URL('../migrations/', import.meta.url);
 for (const file of readdirSync(folder).filter(name=>name.endsWith('.sql')).sort()) {
-  tx(()=> {
-    if (one('SELECT name FROM migrations WHERE name=?',file)) return;
-    db.exec(readFileSync(new URL(file,folder),'utf8'));
-    run('INSERT INTO migrations VALUES (?)',file);
+  await tx(async ()=> {
+    if (await one('SELECT name FROM migrations WHERE name=?',file)) return;
+    await exec(readFileSync(new URL(file,folder),'utf8'));
+    await run('INSERT INTO migrations VALUES (?)',file);
   });
 }
 
-export function audit(actor:string, action:string, target:string, details:any = {}, requestId:string | null=null) {
-  run('INSERT INTO audit(created_at,actor,action,target,details,request_id) VALUES (?,?,?,?,?,?)',iso(),actor,action,target,JSON.stringify(details),requestId);
+export async function audit(actor:string, action:string, target:string, details:any = {}, requestId:string | null=null) {
+  await run('INSERT INTO audit(created_at,actor,action,target,details,request_id) VALUES (?,?,?,?,?,?)',iso(),actor,action,target,JSON.stringify(details),requestId);
 }
-export function createParticipant() {
+export async function createParticipant() {
   const person=id();
-  run('INSERT INTO participants(id,created_at) VALUES (?,?)',person,iso());
-  run('INSERT INTO profiles(participant_id) VALUES (?)',person);
+  await run('INSERT INTO participants(id,created_at) VALUES (?,?)',person,iso());
+  await run('INSERT INTO profiles(participant_id) VALUES (?)',person);
   return person;
 }
-export function bind(person:string, kind:string, issuer:string, value:string, mask:string) {
-  run('INSERT INTO identities(id,participant_id,kind,issuer,lookup,encrypted,mask,verified_at) VALUES (?,?,?,?,?,?,?,?)',
+export async function bind(person:string, kind:string, issuer:string, value:string, mask:string) {
+  await run('INSERT INTO identities(id,participant_id,kind,issuer,lookup,encrypted,mask,verified_at) VALUES (?,?,?,?,?,?,?,?)',
     id(),person,kind,issuer,lookup(value),seal(value),mask,iso());
 }
 export function phoneMask(phone:string) { return phone.slice(0,4)+' •••• '+phone.slice(-3); }
-export function consent(person:string, purpose:string, scope:string) {
-  const last=one('SELECT choice,notice_version FROM consents WHERE participant_id=? AND purpose=? AND scope=? ORDER BY seq DESC LIMIT 1',person,purpose,scope);
+export async function consent(person:string, purpose:string, scope:string) {
+  const last=await one('SELECT choice,notice_version FROM consents WHERE participant_id=? AND purpose=? AND scope=? ORDER BY seq DESC LIMIT 1',person,purpose,scope);
   return last?.choice===1 && (purpose!=='privacy'||last.notice_version===NOTICE);
 }
-export function enrollment(eventId:string, person:string) {
-  return one('SELECT * FROM enrollments WHERE event_id=? AND participant_id=?',eventId,person);
+export async function enrollment(eventId:string, person:string) {
+  return await one('SELECT * FROM enrollments WHERE event_id=? AND participant_id=?',eventId,person);
 }
-export function getEvent(eventId:string) {
-  const event=one('SELECT * FROM events WHERE id=?',eventId);
+export async function getEvent(eventId:string) {
+  const event=await one('SELECT * FROM events WHERE id=?',eventId);
   demand(event,404,'EVENT_NOT_FOUND','找不到這個場次。');
   return event;
 }
-export function getSurvey(surveyId:string) {
-  const survey=one(`SELECT s.*,v.schema_json,v.version,e.program,e.title,e.status AS event_status,e.org_id,e.timezone,e.anchor_type
+export async function getSurvey(surveyId:string) {
+  const survey=await one(`SELECT s.*,v.schema_json,v.version,e.program,e.title,e.status AS event_status,e.org_id,e.timezone,e.anchor_type
     FROM event_surveys s JOIN survey_versions v ON v.id=s.version_id JOIN events e ON e.id=s.event_id WHERE s.id=?`,surveyId);
   demand(survey,404,'SURVEY_NOT_FOUND','找不到這份問卷。');
   return survey;
@@ -91,15 +80,15 @@ export function windowFor(survey:any, registration:any) {
   return {opens_at:survey.opens_at,closes_at:survey.closes_at};
 }
 
-export function eligibility(survey:any, person:string, now=iso(), notification=false, checkTime=true) {
+export async function eligibility(survey:any, person:string, now=iso(), notification=false, checkTime=true) {
   if (!['published','completed'].includes(survey.event_status)) return '場次已關閉';
-  const registration = enrollment(survey.event_id,person);
+  const registration = await enrollment(survey.event_id,person);
   if (!registration || registration.status==='cancelled') return '未報名或已取消';
   if (['T1A','T1B',...FOLLOW].includes(survey.stage) && registration.status!=='attended'
       && !(survey.program==='VEG' && survey.stage!=='T1A')) return '未完成簽到';
-  if (!consent(person,'privacy','*')) return '尚未確認個資告知';
-  if (FOLLOW.includes(survey.stage) && !consent(person,'tracking',survey.program)) return '未同意後續追蹤';
-  if (notification && !one('SELECT line_reachable FROM profiles WHERE participant_id=?',person)?.line_reachable) return 'LINE OA 無法觸達';
+  if (!await consent(person,'privacy','*')) return '尚未確認個資告知';
+  if (FOLLOW.includes(survey.stage) && !await consent(person,'tracking',survey.program)) return '未同意後續追蹤';
+  if (notification && !(await one('SELECT line_reachable FROM profiles WHERE participant_id=?',person))?.line_reachable) return 'LINE OA 無法觸達';
   if (checkTime) {
     const {opens_at,closes_at}=windowFor(survey,registration);
     if (now<opens_at) return '問卷未開放';
@@ -108,17 +97,17 @@ export function eligibility(survey:any, person:string, now=iso(), notification=f
   return null;
 }
 
-tx(()=>{
+await tx(async ()=>{
   const mode=demo?'demo':'service';
-  const current=one("SELECT value FROM app_settings WHERE key='mode'")?.value;
+  const current=(await one("SELECT value FROM app_settings WHERE key='mode'"))?.value;
   if (current && current!==mode) throw new Error('The database must match the configured Demo or Service mode.');
-  if (!current && !demo && one("SELECT id FROM staff WHERE id='operator'")) throw new Error('Do not reuse a Demo database for service mode.');
-  run("INSERT OR IGNORE INTO app_settings VALUES ('mode',?)",mode);
+  if (!current && !demo && await one("SELECT id FROM staff WHERE id='operator'")) throw new Error('Do not reuse a Demo database for service mode.');
+  await run("INSERT OR IGNORE INTO app_settings VALUES ('mode',?)",mode);
   for (const p of PROGRAMS) {
-    run('INSERT OR IGNORE INTO programs VALUES (?,?,?,?,?)',p.code,p.title,p.summary,p.metric,p.unit);
+    await run('INSERT OR IGNORE INTO programs VALUES (?,?,?,?,?)',p.code,p.title,p.summary,p.metric,p.unit);
     for (const stage of Object.keys(STAGES)) {
       if (stage==='T1A' && p.code==='VEG') continue;
-      run('INSERT OR IGNORE INTO survey_versions VALUES (?,?,?,?,?,?,?,?)',
+      await run('INSERT OR IGNORE INTO survey_versions VALUES (?,?,?,?,?,?,?,?)',
         p.code+'-'+stage+'-1',p.code,stage,1,'published',JSON.stringify(questions(p.code,stage)),iso(),iso());
     }
   }
@@ -126,18 +115,24 @@ tx(()=>{
     ['north6',null,'district','北市北第六區'],['north3',null,'district','北市北第三區'],
     ['prajna','north6','chapter','般若分會'],['mind','north6','chapter','慧心分會'],
     ['bright','north3','chapter','光明分會']
-  ]) run('INSERT OR IGNORE INTO org_units VALUES (?,?,?,?)',key,parent,kind,label);
-  if (demo && !one('SELECT id FROM staff LIMIT 1')) seedDemo();
+  ]) await run('INSERT OR IGNORE INTO org_units VALUES (?,?,?,?)',key,parent,kind,label);
+  if (demo && !await one('SELECT id FROM staff LIMIT 1')) await seedDemo();
 });
 
-function seedDemo() {
+if (process.env.TURSO_DATABASE_URL) console.log('SIA database ready', {
+  host:new URL(process.env.TURSO_DATABASE_URL).hostname,
+  migrations:(await one('SELECT COUNT(*) AS n FROM migrations')).n,
+  tables:(await one("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")).n
+});
+
+async function seedDemo() {
   const staff=[
     ['operator','活動營運','operator',null], ['north6-ops','北市北第六區承辦','operator','north6'],
     ['north3-ops','北市北第三區承辦','operator','north3'], ['reviewer','身分審核','identity',null],
     ['reviewer2','身分複核','identity',null], ['north3-analyst','北市北第三區分析','analyst','north3'],
     ['analyst','影響力分析','analyst',null], ['publisher','審校發布','publisher',null], ['admin','系統管理','admin',null]
   ];
-  for (const row of staff) run('INSERT INTO staff VALUES (?,?,?,?)',...row);
+  for (const row of staff) await run('INSERT INTO staff VALUES (?,?,?,?)',...row);
   const sampleEvents = [
     ['vegrun','VGR','VEGRUN 台北場｜成美左岸','臺北市','成美左岸河濱公園','prajna',7,'published'],
     ['earth','EARTH','森林覺醒｜步雲逵踏查','宜蘭縣','佛光大學步雲逵步道','bright',12,'published'],
@@ -148,27 +143,27 @@ function seedDemo() {
   ];
   for (const [slug,program,title,region,venue,org,shift,status] of sampleEvents) {
     const event={starts_at:iso(Number(shift)*DAY-3*3600000),ends_at:iso(Number(shift)*DAY),timezone:'Asia/Taipei'};
-    run('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',slug,program,title,region,venue,org,
+    await run('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',slug,program,title,region,venue,org,
       event.starts_at,event.ends_at,event.timezone,iso(Number(shift)*DAY-21*DAY),event.starts_at,status,'event_end',iso());
     for (const stage of Object.keys(STAGES)) {
       if (stage==='T1A' && program==='VEG') continue;
       const [opens,closes]=plannedWindow(event,stage);
-      run('INSERT INTO event_surveys VALUES (?,?,?,?,?,?,?)',slug+'-'+stage,slug,stage,program+'-'+stage+'-1',opens,closes,'fixed');
+      await run('INSERT INTO event_surveys VALUES (?,?,?,?,?,?,?)',slug+'-'+stage,slug,stage,program+'-'+stage+'-1',opens,closes,'fixed');
     }
   }
   const people=[];
   for (let n=1;n<=12;n++) {
-    const person=createParticipant();
+    const person=await createParticipant();
     people.push(person);
     const phone='+886900000'+String(n).padStart(3,'0');
-    bind(person,'phone','e164',phone,phoneMask(phone));
-    bind(person,'line','demo',String(n),'LINE 示範帳號');
+    await bind(person,'phone','e164',phone,phoneMask(phone));
+    await bind(person,'line','demo',String(n),'LINE 示範帳號');
     const card='DEMO'+String(n).padStart(4,'0');
-    run('UPDATE profiles SET name=?,region=?,district_id=?,chapter_id=?,member_status=?,card_lookup=?,card_encrypted=?,card_mask=?,line_reachable=1 WHERE participant_id=?',
+    await run('UPDATE profiles SET name=?,region=?,district_id=?,chapter_id=?,member_status=?,card_lookup=?,card_encrypted=?,card_mask=?,line_reachable=1 WHERE participant_id=?',
       '示範參與者 '+String(n).padStart(2,'0'),n%2?'臺北市':'宜蘭縣','north6','prajna',n===2?'verified':n===3?'pending':'nonmember',
       n===2||n===3?lookup(card):null,n===2||n===3?seal(card):null,n===2||n===3?'••••'+card.slice(-4):null,person);
     for (const [purpose,scope,value] of [['privacy','*',1],...PROGRAMS.map(x=>['tracking',x.code,1]),['marketing','*',0]]) {
-      run('INSERT INTO consents(participant_id,purpose,scope,notice_version,choice,created_at,source) VALUES (?,?,?,?,?,?,?)',
+      await run('INSERT INTO consents(participant_id,purpose,scope,notice_version,choice,created_at,source) VALUES (?,?,?,?,?,?,?)',
         person,purpose,scope,NOTICE,value,iso(),'seed');
     }
   }
@@ -177,24 +172,24 @@ function seedDemo() {
     const count=slug==='vegrun-follow'?12:8;
     for (let n=0;n<count;n++) {
       const person=people[n];
-      run('INSERT INTO enrollments VALUES (?,?,?,?,?,?)',slug,person,'attended',iso(-104*DAY),iso(-93*DAY),iso(-93*DAY));
-      if (n<8) run('INSERT INTO responses(id,event_survey_id,participant_id,version_id,answers_json,submitted_at) VALUES (?,?,?,?,?,?)',
+      await run('INSERT INTO enrollments VALUES (?,?,?,?,?,?)',slug,person,'attended',iso(-104*DAY),iso(-93*DAY),iso(-93*DAY));
+      if (n<8) await run('INSERT INTO responses(id,event_survey_id,participant_id,version_id,answers_json,submitted_at) VALUES (?,?,?,?,?,?)',
         id(),slug+'-T0',person,program+'-T0-1',JSON.stringify({[metric]:n===7?21:n}),iso(-96*DAY));
-      if (n<7) run('INSERT INTO responses(id,event_survey_id,participant_id,version_id,answers_json,submitted_at) VALUES (?,?,?,?,?,?)',
-        id(),slug+'-T1B',person,program+'-T1B-1',JSON.stringify({awareness:'略有了解',action_intent:'願意'}),plannedWindow(getEvent(String(slug)),'T1B')[0]);
-      if ([4,5,6,9].includes(n) && n<count) run('INSERT INTO responses(id,event_survey_id,participant_id,version_id,answers_json,submitted_at) VALUES (?,?,?,?,?,?)',
+      if (n<7) await run('INSERT INTO responses(id,event_survey_id,participant_id,version_id,answers_json,submitted_at) VALUES (?,?,?,?,?,?)',
+        id(),slug+'-T1B',person,program+'-T1B-1',JSON.stringify({awareness:'略有了解',action_intent:'願意'}),plannedWindow(await getEvent(String(slug)),'T1B')[0]);
+      if ([4,5,6,9].includes(n) && n<count) await run('INSERT INTO responses(id,event_survey_id,participant_id,version_id,answers_json,submitted_at) VALUES (?,?,?,?,?,?)',
         id(),slug+'-T2',person,program+'-T2-1',JSON.stringify({[metric]:n===5?4:n+3}),iso(-3600000));
     }
   }
   const preview=id(), job=id(), sample='vegrun-follow-T2';
-  run('INSERT INTO previews VALUES (?,?,?,?,?,?)',preview,sample,'operator','{}',iso(-DAY),iso());
-  run('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?)',job,preview,sample,'operator','completed',iso(-DAY),iso(-DAY),null);
+  await run('INSERT INTO previews VALUES (?,?,?,?,?,?)',preview,sample,'operator','{}',iso(-DAY),iso());
+  await run('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?)',job,preview,sample,'operator','completed',iso(-DAY),iso(-DAY),null);
   for (const person of people.slice(0,10)) {
     const recipient=id();
-    run('INSERT INTO recipients VALUES (?,?,?)',recipient,job,person);
-    run('INSERT INTO attempts(id,recipient_id,number,due_at,status,queued_at,accepted_at,provider_ref) VALUES (?,?,1,?,?,?,?,?)',
+    await run('INSERT INTO recipients VALUES (?,?,?)',recipient,job,person);
+    await run('INSERT INTO attempts(id,recipient_id,number,due_at,status,queued_at,accepted_at,provider_ref) VALUES (?,?,1,?,?,?,?,?)',
       id(),recipient,iso(-DAY),'accepted',iso(-DAY),iso(-DAY),'demo-seed');
   }
-  run('INSERT INTO evidence(id,event_id,title,source,recorded_at,version,note,status,created_at,created_by) VALUES (?,?,?,?,?,?,?,?,?,?)',
+  await run('INSERT INTO evidence(id,event_id,title,source,recorded_at,version,note,status,created_at,created_by) VALUES (?,?,?,?,?,?,?,?,?,?)',
     id(),'vegrun-follow','北區場簽到彙整','場次簽到',iso(-92*DAY),'1','合成驗收用紀錄。','approved',iso(),'operator');
 }

@@ -19,6 +19,21 @@ npm start
 
 啟動時依序套用 SQL migration，建立 `var/simp.sqlite`。第一次啟動會為三方案建立相對當日的近期場次、追蹤場次及合成帳號。關閉後再啟動會讀取同一資料庫。Demo 使用模擬簡訊驗證、LINE 授權與 LINE OA，不會發出真實通知。前台活動照片為生成情境圖。
 
+## Vercel 與 Turso
+
+在 Vercel 專案的 Environment Variables 設定以下值，然後重新部署：
+
+| Key | 類型 | 值 |
+| --- | --- | --- |
+| `TURSO_DATABASE_URL` | Config | `libsql://social-impact-assessment-vinnyhuangipuregreen.aws-ap-northeast-1.turso.io` |
+| `TURSO_AUTH_TOKEN` | Secret | 該資料庫具有讀寫權限的 Token |
+
+兩個變數需套用到 Production；若要使用 Preview 部署，也需為 Preview 設定。第一次啟動會依序套用 `migrations/`，建立目前模式的初始資料。Migration 與初始化均使用交易，重啟不會重建或清空既有資料。未設定雲端連線時，本機仍使用 `var/simp.sqlite`；Vercel 則會明確報錯，避免意外將資料寫入暫存目錄。
+
+目前維持 Demo 模式（`SIMP_DEMO=1`，預設），建立示範帳號與活動，不會發出真實簡訊或 LINE 通知。這是新的雲端資料庫初始化，不會自動上傳本機的參與紀錄。正式模式仍需要獨立資料庫及下方列出的正式身分驗證設定。
+
+本機若要連線 Turso，將上述兩個值填入未追蹤的 `.env`，再執行 `npm start`。請勿提交 Token。圖片上傳目前仍需要 ImageMagick；Vercel 未配置該工具時，圖片上傳功能不可使用。
+
 ## 操作方式
 
 ### 前台

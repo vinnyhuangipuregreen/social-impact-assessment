@@ -9,20 +9,20 @@ process.env.SIMP_DEMO='1';
 process.env.SIMP_DB=join(directory,'scale.db');
 process.env.HOST='127.0.0.1';
 process.env.PORT='0';
-const {run,db,one,tx,createParticipant,bind}=await import(new URL('../src/store.ts',import.meta.url));
+const {run,one,tx,createParticipant,bind}=await import(new URL('../src/store.ts',import.meta.url));
 const salt='HTTP_TEST_SCALE_';
 const count=5000;
 const now=new Date().toISOString();
-const statement=db.prepare('INSERT INTO enrollments VALUES (?, ?, ?, ?, ?, ?)');
-tx(()=>{
+const {closeDatabase}=await import(new URL('../src/database.ts',import.meta.url));
+await tx(async ()=>{
   for(let n=0;n<count;n++) {
-    const who=createParticipant();
-    bind(who,'line','demo',salt+n,'合成測試');
-    run("UPDATE profiles SET region='合成負載區',line_reachable=1 WHERE participant_id=?",who);
+    const who=await createParticipant();
+    await bind(who,'line','demo',salt+n,'合成測試');
+    await run("UPDATE profiles SET region='合成負載區',line_reachable=1 WHERE participant_id=?",who);
     for(const [purpose,code] of [['privacy','*'],['tracking','EARTH']]) {
-      run('INSERT INTO consents(participant_id,purpose,scope,notice_version,choice,created_at,source) VALUES (?,?,?,?,?,?,?)',who,purpose,code,'demo-v1',1,now,'scale');
+      await run('INSERT INTO consents(participant_id,purpose,scope,notice_version,choice,created_at,source) VALUES (?,?,?,?,?,?,?)',who,purpose,code,'demo-v1',1,now,'scale');
     }
-    statement.run('earth-follow',who,'attended',now,now,now);
+    await run('INSERT INTO enrollments VALUES (?, ?, ?, ?, ?, ?)','earth-follow',who,'attended',now,now,now);
   }
 });
 let child,port,session;
@@ -49,20 +49,20 @@ try {
   assert.equal(preview.count,count);
   const job=await request('/admin/dispatch-jobs',{previewId:preview.id});
   console.log('Preview and queue',count,Math.round(performance.now()-before)+'ms');
-  const accepted=()=>one(`SELECT COUNT(*) AS n FROM attempts a JOIN recipients r ON r.id=a.recipient_id WHERE r.job_id=? AND a.status='accepted'`,job.id).n;
+  const accepted=async()=>(await one(`SELECT COUNT(*) AS n FROM attempts a JOIN recipients r ON r.id=a.recipient_id WHERE r.job_id=? AND a.status='accepted'`,job.id)).n;
   const waitUntil=async(check,timeout)=>{
     const deadline=Date.now()+timeout;
-    while(Date.now()<deadline){if(check())return;await new Promise(r=>setTimeout(r,200));}
-    throw new Error('Timed out at '+accepted()+' accepted');
+    while(Date.now()<deadline){if(await check())return;await new Promise(r=>setTimeout(r,200));}
+    throw new Error('Timed out at '+await accepted()+' accepted');
   };
-  await waitUntil(()=>accepted()>=80,15000);
+  await waitUntil(async()=>(await accepted())>=80,15000);
   await stop();
-  const previous=accepted();
+  const previous=await accepted();
   assert.ok(previous>=80&&previous<count);
   await start();
-  await waitUntil(()=>accepted()===count,100000);
+  await waitUntil(async()=>(await accepted())===count,100000);
   const state=await request('/admin/dispatch-jobs/'+job.id);
-  const receipts=one('SELECT COUNT(*) AS n,MAX(tries) AS retry_max FROM demo_delivery_receipts');
+  const receipts=await one('SELECT COUNT(*) AS n,MAX(tries) AS retry_max FROM demo_delivery_receipts');
   assert.equal(state.status,'completed');
   assert.equal(state.statistics.acceptance.numerator,count);
   assert.equal(state.statistics.acceptance.denominator,count);
@@ -71,5 +71,5 @@ try {
   const timers=await Promise.all(Array.from({length:100},async()=>{const t=performance.now();await request('/admin/events?limit=50');return performance.now()-t;}));
   console.log('100 parallel requests to GET /admin/events (6 seed events) p95',Math.round(timers.sort((a,b)=>a-b)[94])+'ms');
 }finally{
-  await stop();db.close();rmSync(directory,{recursive:true,force:true});
+  await stop();closeDatabase();rmSync(directory,{recursive:true,force:true});
 }
