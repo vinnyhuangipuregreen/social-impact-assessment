@@ -1,4 +1,6 @@
 /* SIA portal: compact navigation and illustrated sustainability cards. */
+.location-grid { align-items: start; }
+.location-grid td:first-child { white-space: nowrap; }
 .container { width: min(1320px,calc(100% - 48px)); }
 .narrow { width: min(990px,calc(100% - 48px)); }
 .nav-inner { display: grid; grid-template-columns: 1fr auto 1fr; height: auto; gap: 0 24px; padding-top: 16px; }
@@ -81,6 +83,7 @@
   .program-info h3 { font-size: 14px; }
 }
 @media (max-width: 820px) {
+  .location-grid { grid-template-columns: 1fr; }
   .nav-inner { grid-template-columns: 1fr auto; padding-block: 13px; gap: 0; min-height: 72px; }
   .header-purpose,.nav-inner .nav-side,.nav-inner nav { display: none; }
   .nav-inner>.mobile-toggle { justify-self: end; }

@@ -1,5 +1,15 @@
 # SIA REST API
 
+## 居住縣市與地區
+
+- `GET /api/v1/config` 的 `residenceLocations` 提供縣市 `cities` 與地區 `districts`，含 `id`、`name`、`sort_order`、`active`，地區另有 `city_id`。前台僅提供啟用選項，既有停用選取保留顯示。
+- `PATCH /api/v1/me/profile` 使用 `residenceCityId`、`residenceDistrictId`（空字串表示未選）。兩欄選填，地區必須屬於所選縣市。省略兩欄會保留既有居住資料。`GET /api/v1/me` 回傳對應的 snake_case ID 與 `residence_city`、`residence_district` 名稱。
+- 系統管理員可透過 `GET /api/v1/admin/residence-locations` 查看全部選項與使用人數；`POST /api/v1/admin/residence-cities`、`POST /api/v1/admin/residence-districts` 新增，`PATCH /api/v1/admin/residence-cities/{id}`、`PATCH /api/v1/admin/residence-districts/{id}` 修改。內容為 `name`、`sortOrder`、`active`；新增地區另需 `cityId`。既有地區的所屬縣市不變。
+- 停用不刪除已保存的參照，更名同步顯示。所有維護均寫入稽核，僅全平台 `admin` 可操作。
+- 問卷派送預覽可用 `residenceCityId`、`residenceDistrictId` 篩選；會員清單同步回傳縣市、地區 ID 與名稱。既有 `region` 仍保存縣市名稱，供舊名單篩選使用。
+
+初始資料來源：[內政部國土測繪中心行政區代碼服務](https://data.gov.tw/dataset/102011)，2026-11-25 擷取，含 22 縣市及 368 鄉鎮市區。採政府資料開放授權條款第 1 版。正式執行時使用資料庫內可維護的選項，不依賴外部行政區 API。
+
 請求前綴為 `/api/v1`。一般請求使用 `application/json`，二進位上傳使用檔案 MIME。列表共同回傳 `{items,nextCursor,total}`，支援 `limit`（最多 100）及 `cursor`。寫入後台會檢查角色與場次或組織範圍。參與者與職員分別使用 HttpOnly Cookie。
 
 錯誤格式如下，`requestId` 可回查稽核。

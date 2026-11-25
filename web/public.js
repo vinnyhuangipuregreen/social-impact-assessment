@@ -1,4 +1,4 @@
-import {api,items,bind,bindForms,brand,btn,close,e,empty,errorSlot,fdate,field,icon,input,message,modal,nfmt,o,pill,select,submit} from './ui.js';
+import {api,items,bind,bindForms,bindResidenceSelects,residenceCityOptions,brand,btn,close,e,empty,errorSlot,fdate,field,icon,input,message,modal,nfmt,o,pill,select,submit} from './ui.js';
 
 export async function startPublic(root,config) {
   const programs=config.programs;
@@ -87,7 +87,10 @@ export async function startPublic(root,config) {
     const district=config.organizations.filter(o=>o.kind==='district'), isMember=me.member_status!=='nonmember';
     return '<section class="container subpage narrow">'+markHeading('個人資料與同意','管理個人身分、聯絡方式與資料使用選項。')+
       '<div class="profile-grid"><section class="card panel"><div class="row-between"><h2>基本資料</h2>'+pill(me.member_status,me.member_status==='pending'?'會員待審':undefined)+'</div>'+
-      '<form id="profile-form" class="form-stack">'+field('顯示名稱',input('name',me.name,'text','maxlength="80"'))+field('居住地區',input('region',me.region,'text','maxlength="50" placeholder="例如：臺北市"'))+
+      '<form id="profile-form" class="form-stack">'+field('顯示名稱',input('name',me.name,'text','maxlength="80"'))+
+      '<div class="form-grid">'+field('居住縣市',select('residenceCityId',residenceCityOptions(config.residenceLocations,me.residence_city_id)))+
+      field('居住地區',select('residenceDistrictId',o('','請先選擇居住縣市')))+'</div>'+
+      (me.region&&!me.residence_city_id?'<p class="note">原居住資料：'+e(me.region)+'。請重新選擇居住縣市與地區。</p>':'')+
       field('參與身分',select('member',o('no','非佛光會員',isMember?'yes':'no')+o('yes','佛光會員',isMember?'yes':'no')))+
       '<div id="member-fields" '+(!isMember?'hidden':'')+'><div class="form-grid">'+field('督導區',select('district',o('','請選擇')+district.map(x=>o(x.id,x.name,me.district_id)).join('')))+
       field('分會',select('chapter',o('','請選擇')))+
@@ -132,6 +135,7 @@ export async function startPublic(root,config) {
   }
   function bindProfile() {
     const form=root.querySelector('#profile-form');
+    bindResidenceSelects(form,config.residenceLocations,me.residence_district_id);
     const district=form.elements.district, chapter=form.elements.chapter, member=form.elements.member;
     function loadBranches(initial='') {
       const branches=config.organizations.filter(x=>x.parent_id===district.value);
@@ -149,7 +153,7 @@ export async function startPublic(root,config) {
     updateMemberFields();
     bindForms(root,'#profile-form',async data=>{
       const fields=Object.fromEntries(data);
-      me=await api('/me/profile',{method:'PATCH',body:{name:fields.name,region:fields.region,member:fields.member==='yes',districtId:fields.district,chapterId:fields.chapter,card:fields.card}});
+      me=await api('/me/profile',{method:'PATCH',body:{name:fields.name,residenceCityId:fields.residenceCityId,residenceDistrictId:fields.residenceDistrictId||'',member:fields.member==='yes',districtId:fields.district,chapterId:fields.chapter,card:fields.card}});
       render();message('基本資料已儲存。');
     });
     bindForms(root,'#photo-form',async data=>{

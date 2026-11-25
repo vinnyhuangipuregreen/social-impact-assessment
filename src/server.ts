@@ -8,6 +8,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { DAY, FOLLOW, NOTICE, NOTICE_TEXT, PROGRAMS, STAGES, Problem, date, demand, iso, normalizeCard, normalizePhone, plannedWindow, validAnswers } from './domain.ts';
 import { all, audit, bind, consent, createParticipant, demo, digest, eligibility, enrollment, getEvent, getSurvey, id, lookup, one, open, phoneMask, run, seal, token, tx, windowFor } from './store.ts';
 import { audience, cancelJob, enqueue, inOrg, jobStats, processQueue, provider, recordConsent, report, scope, tlsOrigin } from './operations.ts';
+import { residenceLocations, resolveResidence, saveResidenceLocation } from './residence.ts';
 
 const requestContext = new AsyncLocalStorage<string>();
 const PARTICIPANT='simp_person', STAFF='simp_staff', LINE='simp_line', LINE_STATE='simp_line_state';
@@ -44,8 +45,10 @@ async function staff(req:IncomingMessage, roles=staffRoles.join('|')) {
   return auth;
 }
 async function profile(personId:string) {
-  const data=await one(`SELECT p.participant_id,p.name,p.member_status,p.region,p.district_id,p.chapter_id,p.card_mask,p.review_reason,p.photo_id,p.line_reachable
-    FROM profiles p WHERE participant_id=?`,personId);
+  const data=await one(`SELECT p.participant_id,p.name,p.member_status,p.region,p.district_id,p.chapter_id,p.card_mask,p.review_reason,p.photo_id,p.line_reachable,
+    p.residence_city_id,p.residence_district_id,c.name AS residence_city,d.name AS residence_district
+    FROM profiles p LEFT JOIN residence_cities c ON c.id=p.residence_city_id
+    LEFT JOIN residence_districts d ON d.id=p.residence_district_id WHERE participant_id=?`,personId);
   const identities=await all('SELECT kind,mask,verified_at FROM identities WHERE participant_id=? AND revoked_at IS NULL',personId);
   const flags={privacy:await consent(personId,'privacy','*'),marketing:await consent(personId,'marketing','*'),
     tracking:Object.fromEntries(await Promise.all(PROGRAMS.map(async p=>[p.code,await consent(personId,'tracking',p.code)])))};
@@ -316,7 +319,7 @@ async function integration(req:IncomingMessage,path:string,method:string) {
   });
 }
 async function participant(req:IncomingMessage,res:ServerResponse,path:string,method:string,url:URL) {
-  if (path==='/config' && method==='GET') return {demo,programs:PROGRAMS,stages:STAGES,noticeVersion:NOTICE,noticeText:NOTICE_TEXT,organizations:await all('SELECT * FROM org_units ORDER BY kind DESC,name')};
+  if (path==='/config' && method==='GET') return {demo,programs:PROGRAMS,stages:STAGES,noticeVersion:NOTICE,noticeText:NOTICE_TEXT,organizations:await all('SELECT * FROM org_units ORDER BY kind DESC,name'),residenceLocations:await residenceLocations()};
   if (path==='/events' && method==='GET') {
     const events=await all("SELECT * FROM events WHERE status IN ('published','completed') ORDER BY starts_at ASC,id");
     return page(events.filter(e=>!url.searchParams.has('program')||e.program===url.searchParams.get('program')),url);
@@ -335,11 +338,12 @@ async function participant(req:IncomingMessage,res:ServerResponse,path:string,me
     const changed=member&&(cardLookup!==current.card_lookup||district!==current.district_id||chapter!==current.chapter_id);
     const status=member?(changed?'pending':current.member_status):'nonmember';
     await tx(async ()=>{
-      await run('UPDATE profiles SET name=?,region=?,member_status=?,district_id=?,chapter_id=?,card_lookup=?,card_encrypted=?,card_mask=?,review_reason=? WHERE participant_id=?',
-        clean(input.name,80),clean(input.region,50),status,member?district:null,member?chapter:null,cardLookup,
+      const residence=await resolveResidence(input,current);
+      await run('UPDATE profiles SET name=?,region=?,member_status=?,district_id=?,chapter_id=?,card_lookup=?,card_encrypted=?,card_mask=?,review_reason=?,residence_city_id=?,residence_district_id=? WHERE participant_id=?',
+        clean(input.name,80),residence.region,status,member?district:null,member?chapter:null,cardLookup,
         member?(value?seal(value):current.card_encrypted):null,member?(value?'••••'+value.slice(-4):current.card_mask):null,
-        member&&!changed?current.review_reason:null,owner);
-      await auditReq(owner,'profile.update',owner,{memberStatus:status});
+        member&&!changed?current.review_reason:null,residence.cityId,residence.districtId,owner);
+      await auditReq(owner,'profile.update',owner,{memberStatus:status,residenceCityId:residence.cityId,residenceDistrictId:residence.districtId});
     });
     return await profile(owner);
   }
@@ -484,6 +488,16 @@ async function administration(req:IncomingMessage,res:ServerResponse,path:string
   const who=await staff(req);
   const allowed=async (roles:string)=>await staff(req,roles);
   if (path==='/admin/me' && method==='GET') return {id:who.staff_id,label:who.label,role:who.role,org:who.org_id};
+  const locationRoute=path.match(/^\/admin\/residence-(cities|districts)(?:\/([^/]+))?$/);
+  if (path==='/admin/residence-locations'||locationRoute) {
+    await allowed('admin');
+    demand(!who.org_id,403,'ORG_FORBIDDEN','僅全平台系統管理員可維護縣市地區。');
+    if (path==='/admin/residence-locations'&&method==='GET') return residenceLocations(true);
+    if (locationRoute&&((!locationRoute[2]&&method==='POST')||(locationRoute[2]&&method==='PATCH'))) {
+      return saveResidenceLocation(locationRoute[1] as 'cities'|'districts',locationRoute[2],await json(req),who.staff_id);
+    }
+    throw new Problem(405,'METHOD','此操作方式不支援。');
+  }
   if (path==='/admin/events' && method==='GET') {
     await allowed('operator|analyst|publisher');
     const term=url.searchParams.get('q')??'';
@@ -725,7 +739,9 @@ async function administration(req:IncomingMessage,res:ServerResponse,path:string
     await allowed('identity');
     const term=url.searchParams.get('q')??'';
     const rows=await all(`SELECT p.participant_id AS id,p.name,p.member_status,p.district_id,p.chapter_id,p.region,p.card_mask,p.review_reason,
+      p.residence_city_id,p.residence_district_id,c.name AS residence_city,d.name AS residence_district,
       a.created_at, i.mask AS phone_mask FROM profiles p JOIN participants a ON a.id=p.participant_id
+      LEFT JOIN residence_cities c ON c.id=p.residence_city_id LEFT JOIN residence_districts d ON d.id=p.residence_district_id
       LEFT JOIN identities i ON i.participant_id=p.participant_id AND i.kind='phone' AND i.revoked_at IS NULL WHERE a.status='active'
       ORDER BY (p.member_status='pending') DESC,a.created_at DESC,p.participant_id`);
     await auditReq(who.staff_id,'member.list','members');

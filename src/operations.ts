@@ -55,7 +55,7 @@ export async function audience(staff:any, survey:any, input:any) {
     if (await one('SELECT id FROM responses WHERE event_survey_id=? AND participant_id=? AND effective=1',survey.id,profile.participant_id)) return increment('已完成');
     const reason=await eligibility(survey,profile.participant_id,iso(),true,false);
     if (reason) return increment(reason);
-    members.push({id:profile.participant_id, type:profile.member_status, mask:profile.card_mask??'非會員', region:profile.region||'未設定'});
+    members.push({id:profile.participant_id, type:profile.member_status, mask:profile.card_mask??'非會員', region:profile.region||'未設定',residenceCity:profile.residence_city,residenceDistrict:profile.residence_district});
   };
   demand(['member','nonmember'].includes(input.audience),422,'AUDIENCE','請指定會員或非會員。');
   if (input.audience==='member') {
@@ -77,13 +77,18 @@ export async function audience(staff:any, survey:any, input:any) {
   } else {
     const strings=(values:any)=>Array.isArray(values)?values.filter(v=>typeof v==='string').slice(0,40):[];
     const regions=strings(input.regions), statuses=strings(input.statuses);
-    const profiles=await all(`SELECT p.*,en.status FROM profiles p JOIN enrollments en ON en.participant_id=p.participant_id
+    const cityId=input.residenceCityId||'', districtId=input.residenceDistrictId||'';
+    demand(!cityId||await one('SELECT id FROM residence_cities WHERE id=?',cityId),422,'RESIDENCE_CITY','居住縣市無效。');
+    demand(!districtId||(cityId&&await one('SELECT id FROM residence_districts WHERE id=? AND city_id=?',districtId,cityId)),422,'RESIDENCE_DISTRICT','請選擇該縣市所屬的居住地區。');
+    const profiles=await all(`SELECT p.*,en.status,c.name AS residence_city,d.name AS residence_district FROM profiles p JOIN enrollments en ON en.participant_id=p.participant_id
+      LEFT JOIN residence_cities c ON c.id=p.residence_city_id LEFT JOIN residence_districts d ON d.id=p.residence_district_id
       WHERE en.event_id=? AND p.member_status='nonmember'`,survey.event_id);
     for (const profile of profiles) {
-      if ((!regions.length || regions.includes(profile.region)) && (!statuses.length || statuses.includes(profile.status))) await evaluate(profile);
+      if ((!regions.length || regions.includes(profile.region)) && (!statuses.length || statuses.includes(profile.status))&&
+        (!cityId||profile.residence_city_id===cityId)&&(!districtId||profile.residence_district_id===districtId)) await evaluate(profile);
     }
   }
-  return {members,excluded,input:{audience:input.audience, regions:input.regions??[], statuses:input.statuses??[]}, createdAt:iso()};
+  return {members,excluded,input:{audience:input.audience, regions:input.regions??[], statuses:input.statuses??[],residenceCityId:input.residenceCityId||'',residenceDistrictId:input.residenceDistrictId||''}, createdAt:iso()};
 }
 
 async function canonicalPeople() {

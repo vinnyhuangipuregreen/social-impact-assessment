@@ -233,10 +233,10 @@ test('A transient provider failure retries without duplicating an accepted peer'
   const current=new Date().toISOString();
   for(const [personId,jar] of [[p1.participant_id,first],[p2.participant_id,second]]) {
     await allow(jar,['EARTH']);
-    await call('/me/profile',{jar,method:'PATCH',body:{member:false,region:'驗收測區'}});
+    await call('/me/profile',{jar,method:'PATCH',body:{member:false,residenceCityId:'09007',residenceDistrictId:'09007010'}});
     db.prepare("INSERT INTO enrollments VALUES ('earth-follow',?,'attended',?,?,?)").run(personId,current,current,current);
   }
-  const preview=await call('/admin/dispatch-jobs/preview',{jar:staff,body:{surveyId:'earth-follow-T2',audience:'nonmember',regions:['驗收測區'],statuses:['attended']}});
+  const preview=await call('/admin/dispatch-jobs/preview',{jar:staff,body:{surveyId:'earth-follow-T2',audience:'nonmember',residenceCityId:'09007',residenceDistrictId:'09007010',statuses:['attended']}});
   assert.equal(preview.count,2);
   const job=await call('/admin/dispatch-jobs',{jar:staff,body:{previewId:preview.id}});
   await wait(3000);
@@ -263,6 +263,50 @@ test('Reviewed correction preserves the original response and its submission tim
   assert.equal(saved.submitted_at,before.submitted_at);
   assert.equal(db.prepare('SELECT effective FROM responses WHERE id=?').get(before.id).effective,0);
   assert.equal(JSON.parse(saved.answers_json).diet_meals_7d,3);
+});
+
+test('Taiwan residence selections persist and reject mismatched or unknown areas',async()=>{
+  const config=await call('/config');
+  assert.equal(config.residenceLocations.cities.length,22);
+  assert.equal(config.residenceLocations.districts.length,368);
+  assert.equal(config.residenceLocations.districts.filter(d=>d.city_id==='63000').length,12);
+  const jar={};
+  const user=await otp('0912000190',jar);
+  const data={name:'縣市地區驗收',member:false,residenceCityId:'63000',residenceDistrictId:'63000030'};
+  const saved=await call('/me/profile',{jar,method:'PATCH',body:data});
+  assert.equal(saved.residence_city,'臺北市');assert.equal(saved.residence_district,'大安區');
+  assert.equal((await call('/me',{jar})).residence_district_id,'63000030');
+  await call('/me/profile',{jar,method:'PATCH',body:{...data,residenceCityId:'65000'},expect:422});
+  await call('/me/profile',{jar,method:'PATCH',body:{...data,residenceDistrictId:'unknown'},expect:422});
+  await call('/me/profile',{jar,method:'PATCH',body:{member:false,region:'海外'},expect:422});
+  assert.throws(()=>db.prepare('UPDATE profiles SET residence_city_id=? WHERE participant_id=?').run('65000',user.participant_id),/RESIDENCE_MISMATCH/);
+  assert.equal((await call('/me',{jar})).residence_city_id,'63000');
+  const cleared=await call('/me/profile',{jar,method:'PATCH',body:{...data,residenceCityId:'',residenceDistrictId:''}});
+  assert.equal(cleared.residence_city_id,null);assert.equal(cleared.residence_district_id,null);assert.equal(cleared.region,'');
+});
+
+test('only system administrators maintain locations and disabled choices preserve existing references',async()=>{
+  await call('/admin/residence-locations',{jar:staff,expect:403});
+  await call('/admin/residence-cities',{jar:staff,body:{name:'驗收市',sortOrder:50,active:true},expect:403});
+  const admin=await login('admin');
+  const city=await call('/admin/residence-cities',{jar:admin,body:{name:'驗收市',sortOrder:50,active:true}});
+  const area=await call('/admin/residence-districts',{jar:admin,body:{cityId:city.id,name:'驗收區',sortOrder:0,active:true}});
+  await call('/admin/residence-districts',{jar:admin,body:{cityId:city.id,name:'驗收區',sortOrder:1,active:true},expect:409});
+  await call('/admin/residence-cities',{jar:admin,body:{name:'外國',sortOrder:0,active:true},expect:422});
+  const jar={};await otp('0912000190',jar);
+  const location={member:false,residenceCityId:city.id,residenceDistrictId:area.id};
+  await call('/me/profile',{jar,method:'PATCH',body:location});
+  await call('/admin/residence-cities/'+city.id,{jar:admin,method:'PATCH',body:{name:'驗收新市',sortOrder:51,active:false}});
+  await call('/admin/residence-districts/'+area.id,{jar:admin,method:'PATCH',body:{name:'驗收新區',sortOrder:2,active:false}});
+  const retained=await call('/me/profile',{jar,method:'PATCH',body:{...location,name:'保留既有地區'}});
+  assert.equal(retained.residence_city,'驗收新市');assert.equal(retained.residence_district,'驗收新區');assert.equal(retained.region,'驗收新市');
+  const other={};await otp('0912000191',other);
+  await call('/me/profile',{jar:other,method:'PATCH',body:location,expect:422});
+  const catalog=await call('/admin/residence-locations',{jar:admin});
+  assert.equal(catalog.cities.find(c=>c.id===city.id).used,1);
+  assert.equal(catalog.districts.find(d=>d.id===area.id).active,0);
+  assert.ok(db.prepare("SELECT COUNT(*) n FROM audit WHERE action LIKE 'residence.%' AND actor='admin'").get().n>=4);
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
 });
 
 test('Both app entry points and their same-origin assets are served',async()=>{

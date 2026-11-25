@@ -53,3 +53,37 @@ test('cloud configuration cannot silently fall back to a local database',async()
     assert.match(result.output,/TURSO_DATABASE_URL and TURSO_AUTH_TOKEN/);
   }
 });
+
+test('residence migration maps legacy city names without inventing districts or losing unmatched text',async()=>{
+  const folder=mkdtempSync(join(tmpdir(),'sia-residence-migration-'));
+  const storeUrl=new URL('../src/store.ts',import.meta.url).href;
+  const migrationUrl=new URL('../migrations/',import.meta.url).href;
+  try {
+    const result=await execute(`
+      import assert from 'node:assert/strict';
+      import {DatabaseSync} from 'node:sqlite';
+      import {readFileSync,readdirSync} from 'node:fs';
+      const db=new DatabaseSync(process.env.SIMP_DB);
+      db.exec('CREATE TABLE migrations (name TEXT PRIMARY KEY)');
+      const directory=new URL(${JSON.stringify(migrationUrl)});
+      for(const file of readdirSync(directory).filter(name=>name.endsWith('.sql')&&!name.startsWith('006')).sort()) {
+        db.exec(readFileSync(new URL(file,directory),'utf8'));
+        db.prepare('INSERT INTO migrations VALUES (?)').run(file);
+      }
+      for(const [id,region] of [['legacy-city','台北市'],['legacy-text','原居住文字']]) {
+        db.prepare('INSERT INTO participants(id,created_at) VALUES (?,?)').run(id,new Date().toISOString());
+        db.prepare('INSERT INTO profiles(participant_id,region) VALUES (?,?)').run(id,region);
+      }
+      db.close();
+      await import(${JSON.stringify(storeUrl)});
+      const {one,all,closeDatabase}=await import(${JSON.stringify(moduleUrl)});
+      const city=await one("SELECT * FROM profiles WHERE participant_id='legacy-city'");
+      assert.equal(city.region,'臺北市');assert.equal(city.residence_city_id,'63000');assert.equal(city.residence_district_id,null);
+      const text=await one("SELECT * FROM profiles WHERE participant_id='legacy-text'");
+      assert.equal(text.region,'原居住文字');assert.equal(text.residence_city_id,null);
+      assert.equal((await all('PRAGMA foreign_key_check')).length,0);
+      closeDatabase();
+    `,{SIMP_DB:join(folder,'test.sqlite'),SIMP_DEMO:'1'});
+    assert.equal(result.status,0,result.output);
+  } finally {rmSync(folder,{recursive:true,force:true});}
+});

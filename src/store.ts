@@ -192,4 +192,5 @@ async function seedDemo() {
   }
   await run('INSERT INTO evidence(id,event_id,title,source,recorded_at,version,note,status,created_at,created_by) VALUES (?,?,?,?,?,?,?,?,?,?)',
     id(),'vegrun-follow','北區場簽到彙整','場次簽到',iso(-92*DAY),'1','合成驗收用紀錄。','approved',iso(),'operator');
+  await run('UPDATE profiles SET residence_city_id=(SELECT id FROM residence_cities WHERE name=profiles.region) WHERE residence_city_id IS NULL');
 }

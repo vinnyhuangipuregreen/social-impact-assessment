@@ -21,6 +21,19 @@ const shapes={
 export const icon=(key,size=18)=>'<svg aria-hidden="true" width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">'+(shapes[key]??'')+'</svg>';
 export const e=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 export const o=(value,label,selected)=>'<option value="'+e(value)+'" '+(value===selected?'selected':'')+'>'+e(label)+'</option>';
+export const residenceCityOptions=(locations,selected='',activeOnly=true)=>o('','請選擇居住縣市')+
+  locations.cities.filter(c=>!activeOnly||c.active||c.id===selected).map(c=>o(c.id,c.name+(c.active?'':'（已停用）'),selected)).join('');
+export function bindResidenceSelects(form,locations,selectedDistrict='',activeOnly=true) {
+  const city=form.elements.residenceCityId, district=form.elements.residenceDistrictId;
+  function load(selected='') {
+    const activeCity=locations.cities.find(c=>c.id===city.value)?.active;
+    const rows=locations.districts.filter(d=>d.city_id===city.value&&(!activeOnly||(activeCity&&d.active)||d.id===selected));
+    district.innerHTML=o('','請選擇居住地區')+rows.map(d=>o(d.id,d.name+(d.active?'':'（已停用）'),selected)).join('');
+    district.disabled=!city.value||!rows.length;
+  }
+  load(selectedDistrict);
+  city.onchange=()=>load();
+}
 export const fdate=(value,zone='Asia/Taipei',time=false)=>value?new Intl.DateTimeFormat('zh-TW',{timeZone:zone,month:'2-digit',day:'2-digit',year:'numeric',...(time?{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}:{})}).format(new Date(value)).replaceAll('/','.'):'—';
 export const percent=r=>r?.percent===null||r?.percent===undefined?'資料不足':r.percent+'%';
 export const fraction=r=>r?new Intl.NumberFormat('zh-TW').format(r.numerator)+' / '+new Intl.NumberFormat('zh-TW').format(r.denominator):'—';

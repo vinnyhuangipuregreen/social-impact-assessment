@@ -1,4 +1,4 @@
-import {api,items,bind,bindForms,brand,btn,close,e,empty,errorSlot,fdate,field,fraction,groupNames,icon,input,message,modal,nfmt,o,percent,pill,query,select,submit,zoneDate} from './ui.js';
+import {api,items,bind,bindForms,bindResidenceSelects,residenceCityOptions,brand,btn,close,e,empty,errorSlot,fdate,field,fraction,groupNames,icon,input,message,modal,nfmt,o,percent,pill,query,select,submit,zoneDate} from './ui.js';
 
 export async function startAdmin(root,config) {
   const programMap=new Map(config.programs.map(p=>[p.code,p]));
@@ -18,6 +18,7 @@ export async function startAdmin(root,config) {
     ['evidence','證據與快照','folder','operator|analyst|publisher'],
     ['corrections','回覆更正','doc','analyst|publisher'],
     ['members','會員與權利請求','people','identity'],
+    ['locations','縣市地區維護','pin','admin'],
     ['audit','稽核紀錄','shield','admin']
   ];
   let me=await api('/admin/me').catch(error=>{if(error.status===401)return null;throw error;});
@@ -102,7 +103,7 @@ export async function startAdmin(root,config) {
     try {
       if (can('operator|analyst|publisher')) events=await items('/admin/events');
       if(serial!==routeCounter) return;
-      await ({dashboard,events:eventPage,versions:versionPage,dispatch,reports,evidence:library,corrections,members,audit:auditPage}[route])(target);
+      await ({dashboard,events:eventPage,versions:versionPage,dispatch,reports,evidence:library,corrections,members,locations:locationPage,audit:auditPage}[route])(target);
       bindPagination(target);
     }catch(error) {
       if(serial===routeCounter) target.innerHTML=empty('無法載入資料',error.message);
@@ -306,17 +307,19 @@ export async function startAdmin(root,config) {
       field('問卷階段',select('surveyId','','required')))+field('對象',select('audience',o('nonmember','非佛光會員')+o('member','已核驗佛光會員')))+
       '<div data-card-fields hidden>'+field('指定佛光卡號','<textarea name="cards" rows="4" placeholder="以逗號或換行分隔"></textarea>')+
       (config.demo?'<p class="note">測試卡號可用 DEMO0002、DEMO0003、DEMO9999。請選 VEGRUN 北區場 T2。</p>':'')+'</div>'+
-      '<div data-nonmember-fields>'+cols(field('居住地區（選填）',input('regions','','text','placeholder="以逗號分隔"')),
-        field('參與狀態',select('status',o('','所有符合資格者')+o('attended','已簽到')+o('registered','已報名'))))+
+      '<div data-nonmember-fields>'+cols(field('居住縣市（選填）',select('residenceCityId',residenceCityOptions(config.residenceLocations,'',false))),
+        field('居住地區（選填）',select('residenceDistrictId',o('','請先選擇居住縣市'))))+
+        field('參與狀態',select('status',o('','所有符合資格者')+o('attended','已簽到')+o('registered','已報名')))+
       '<p class="note">系統會排除已填答、未同意追蹤與無法透過 LINE OA 觸達的人員。</p></div>'+errorSlot+submit('預覽派送名單')+'</form>',{wide:true});
     const form=box.querySelector('form');
+    bindResidenceSelects(form,config.residenceLocations,'',false);
     const updateStage=()=>{form.elements.surveyId.innerHTML=(allowedEvents.find(ev=>ev.id===form.elements.eventId.value)?.surveys??[]).map(s=>o(s.id,s.stage+' · '+stages[s.stage])).join('');};
     const updateType=()=>{ const member=form.elements.audience.value==='member';box.querySelector('[data-card-fields]').hidden=!member;box.querySelector('[data-nonmember-fields]').hidden=member; };
     form.elements.eventId.onchange=updateStage;form.elements.audience.onchange=updateType;updateStage();updateType();
     bindForms(box,'form',async data=>{
       const ev=allowedEvents.find(ev=>ev.id===data.get('eventId'));
       const preview=await api('/admin/dispatch-jobs/preview',{body:{surveyId:data.get('surveyId'),audience:data.get('audience'),cards:data.get('cards'),
-        regions:data.get('regions').split(/[,，]/).map(v=>v.trim()).filter(Boolean),statuses:data.get('status')?[data.get('status')]:[]}});
+        residenceCityId:data.get('residenceCityId'),residenceDistrictId:data.get('residenceDistrictId')||'',statuses:data.get('status')?[data.get('status')]:[]}});
       jobPreview(preview,ev);
     });
   }
@@ -324,7 +327,7 @@ export async function startAdmin(root,config) {
     const box=modal('確認派送名單','<div class="audience-result"><strong>'+nfmt(preview.count,0)+'</strong><span>位對象符合名單條件</span></div>'+
       '<p class="note">名單確認後將固定。實際發送前會重新檢查資格。</p>'+
       '<div class="row-wrap">'+Object.entries(preview.excluded).map(([key,value])=>pill('pending',key+' '+value)).join('')+'</div>'+
-      table(['遮罩卡號','類別','地區'],preview.recipients.map(r=>[e(r.mask),pill(r.type),e(r.region)]))+
+      table(['遮罩卡號','類別','居住縣市','居住地區'],preview.recipients.map(r=>[e(r.mask),pill(r.type),e(r.residenceCity||r.region),e(r.residenceDistrict||'—')]))+
       (preview.count?'<form class="form-stack"><div class="separator"></div>'+dateField('排程發送時間（'+ev.timezone+'，留空為立即發送）','dueAt','',ev.timezone)+errorSlot+submit('確認名單並排程')+'</form>':'')+
       '<div class="row-wrap">'+btn('返回重新設定','quiet','data-back-job')+'</div>',{wide:true});
     bind(box,'[data-back-job]',()=>jobEditor());
@@ -451,8 +454,8 @@ export async function startAdmin(root,config) {
     target.innerHTML=title('會員與權利請求','核驗佛光卡號、處理身分衝突與個資權利案件。')+
       section('會員清單','<form class="inline-form">'+input('q',memberSearch,'search','aria-label="搜尋會員" placeholder="搜尋名稱、遮罩卡號或識別碼"')+
       select('status',o('','全部身分',memberType)+o('pending','待核驗',memberType)+o('verified','已核驗',memberType)+o('nonmember','非佛光會員',memberType),'aria-label="身分狀態"')+submit('搜尋','secondary')+'</form>'+
-      table(['顯示名稱','地區','卡號','手機','身分狀態','操作'],list.items.map(row=>[
-        e(row.name||'未設定'),e(row.region||'—'),e(row.card_mask??'—'),e(row.phone_mask??'—'),stateTitle(row.member_status),
+      table(['顯示名稱','居住縣市','居住地區','卡號','手機','身分狀態','操作'],list.items.map(row=>[
+        e(row.name||'未設定'),e(row.residence_city||row.region||'—'),e(row.residence_district||'—'),e(row.card_mask??'—'),e(row.phone_mask??'—'),stateTitle(row.member_status),
         row.member_status==='pending'?btn('核驗會員','secondary small','data-member="'+e(row.id)+'"'):''
       ]))+pagination(list,'members'))+
       section('身分衝突案件',table(['發生時間','案件類型','原因','狀態','操作'],cases.items.map(row=>[
@@ -543,6 +546,49 @@ export async function startAdmin(root,config) {
       await api('/admin/responses/'+r.id+'/corrections',{body:{answers,reason:values.get('reason')}});
       close();delete pageState.corrections;await render();message('更正已送交複核。');
     });
+  }
+
+  let residenceCity='';
+  async function locationPage(target) {
+    const locations=await api('/admin/residence-locations');
+    config.residenceLocations=locations;
+    if (!locations.cities.some(c=>c.id===residenceCity)) residenceCity=locations.cities[0]?.id??'';
+    const current=locations.cities.find(c=>c.id===residenceCity);
+    const districts=locations.districts.filter(d=>d.city_id===residenceCity);
+    const activeLabel=row=>pill(row.active?'open':'closed',row.active?'啟用':'停用');
+    target.innerHTML=title('縣市地區維護','管理台灣居住縣市與鄉鎮市區。停用後保留既有紀錄。')+
+      '<div class="profile-grid location-grid">'+
+      section('居住縣市（'+locations.cities.length+'）',table(['縣市','狀態','排序','使用人數','操作'],locations.cities.map(c=>[
+        '<strong>'+e(c.name)+'</strong>',activeLabel(c),nfmt(c.sort_order,0),nfmt(c.used,0),
+        rowActions(btn('地區','secondary small','data-location-city="'+e(c.id)+'"'),btn('編輯','quiet small','data-edit-city="'+e(c.id)+'"'))
+      ])),btn('新增縣市','primary small','data-new-city','add'))+
+      section((current?.name??'請選擇縣市')+' · 居住地區（'+districts.length+'）',
+      '<div class="inline-form">'+field('選擇縣市',select('locationCity',locations.cities.map(c=>o(c.id,c.name+(c.active?'':'（已停用）'),residenceCity)).join('')))+ '</div>'+
+      table(['鄉鎮市區','狀態','排序','使用人數','操作'],districts.map(d=>[
+        '<strong>'+e(d.name)+'</strong>',activeLabel(d),nfmt(d.sort_order,0),nfmt(d.used,0),btn('編輯','secondary small','data-edit-district="'+e(d.id)+'"')
+      ])),btn('新增地區','primary small','data-new-district '+(!current?'disabled':''),'add'))+'</div>';
+    target.querySelector('[name=locationCity]').onchange=event=>{residenceCity=event.target.value;render();};
+    bind(target,'[data-location-city]',el=>{residenceCity=el.dataset.locationCity;render();});
+    function editor(kind,row) {
+      const city=kind==='cities', label=city?'縣市':'地區';
+      const box=modal((row?'編輯':'新增')+label,'<form class="form-stack">'+
+        (!city?'<p class="note">所屬縣市：'+e(current?.name)+'</p>':'')+
+        field(label+'名稱',input('name',row?.name??'','text','required maxlength="20" placeholder="'+(city?'例如：臺北市':'例如：中正區')+'"'))+
+        field('顯示排序',input('sortOrder',row?.sort_order??0,'number','required min="0" max="9999" step="1"'))+
+        '<label class="checkbox"><input type="checkbox" name="active" '+(!row||row.active?'checked':'')+'>啟用，提供前台選擇</label>'+
+        '<p class="note">停用不影響既有居住資料；更名後將同步顯示新名稱。</p>'+errorSlot+submit('儲存'+label)+'</form>');
+      bindForms(box,'form',async values=>{
+        const saved=await api('/admin/residence-'+kind+(row?'/'+encodeURIComponent(row.id):''),{
+          method:row?'PATCH':'POST',body:{name:values.get('name'),sortOrder:Number(values.get('sortOrder')),active:values.get('active')==='on',...(!city?{cityId:residenceCity}:{})}
+        });
+        if (city&&!row) residenceCity=saved.id;
+        close();await render();message(label+'資料已儲存。');
+      });
+    }
+    bind(target,'[data-new-city]',()=>editor('cities'));
+    bind(target,'[data-new-district]',()=>editor('districts'));
+    bind(target,'[data-edit-city]',el=>editor('cities',locations.cities.find(c=>c.id===el.dataset.editCity)));
+    bind(target,'[data-edit-district]',el=>editor('districts',districts.find(d=>d.id===el.dataset.editDistrict)));
   }
 
   let auditSearch='';
