@@ -7,6 +7,7 @@ import {tmpdir} from 'node:os';
 import {once} from 'node:events';
 import {DatabaseSync} from 'node:sqlite';
 import {createHash} from 'node:crypto';
+import sharp from 'sharp';
 
 let child,origin,folder,db;
 const participant={};
@@ -184,6 +185,39 @@ test('UAT-12 and UAT-15: scoped attendance, audits, private photo, and phone rot
   const root=await login('admin');
   const audit=await call('/admin/audit?q=asset.read',{jar:root});
   assert.ok(audit.items.some(item=>item.target===photo.id));
+});
+
+test('photo uploads decode without an external image tool, resize, orient and strip metadata',async()=>{
+  const jar={};await otp('0912999997',jar);
+  let lastPhoto;
+  for(const format of ['png','jpeg','webp']) {
+    const image=sharp({create:{width:2000,height:1000,channels:3,background:'#168545'}}).toFormat(format);
+    const source=await (format==='jpeg'?image.withMetadata({orientation:6}):image).toBuffer();
+    const saved=await call('/me/files',{jar,body:new Blob([source],{type:'image/'+format})});
+    const response=await fetch(origin+'/api/v1/me/files/'+saved.id,{headers:{Cookie:Object.entries(jar).map(([key,value])=>key+'='+value).join('; ')}});
+    assert.equal(response.status,200);
+    assert.equal(response.headers.get('content-type'),'image/'+format);
+    const metadata=await sharp(Buffer.from(await response.arrayBuffer())).metadata();
+    assert.equal(metadata.format,format);
+    assert.equal(Math.max(metadata.width,metadata.height),1600);
+    if(format==='jpeg') {assert.equal(metadata.width,800);assert.equal(metadata.height,1600);}
+    assert.equal(metadata.exif,undefined);assert.equal(metadata.xmp,undefined);assert.equal(metadata.iptc,undefined);
+    assert.equal((await call('/me',{jar})).photo_id,saved.id);
+    lastPhoto=saved.id;
+  }
+  const png=await sharp({create:{width:10,height:10,channels:3,background:'#fff'}}).png().toBuffer();
+  for(const data of [Buffer.from('invalid image'),png.subarray(0,32)]) {
+    const rejected=await call('/me/files',{jar,body:new Blob([data],{type:'image/png'}),expect:422});
+    assert.equal(rejected.error.code,'FILE_IMAGE');
+  }
+  await call('/me/files',{jar,body:new Blob([png],{type:'image/jpeg'}),expect:422});
+  const tooWide=await sharp({create:{width:8001,height:1,channels:3,background:'#fff'}}).png().toBuffer();
+  await call('/me/files',{jar,body:new Blob([tooWide],{type:'image/png'}),expect:422});
+  await call('/me/files',{jar,body:new Blob([Buffer.alloc(5*1024*1024+1)],{type:'image/png'}),expect:413});
+  assert.equal((await call('/me',{jar})).photo_id,lastPhoto);
+  const operator=await login('operator');
+  const asset=await call('/admin/evidence/files',{jar:operator,body:new Blob([png],{type:'image/png'})});
+  assert.equal(asset.mime,'image/png');
 });
 
 test('UAT-13 and UAT-16: immutable version assignment and independent snapshot approval',async()=>{

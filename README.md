@@ -4,7 +4,7 @@
 
 ## 啟動 Demo
 
-需要 **Node.js 24.12 以上**。照片與證據圖片的上傳、縮圖與移除中繼資料需要 **ImageMagick 7** 的 `magick` 指令。安裝後將它加入 PATH。可用 `SIMP_IMAGE_TOOL` 指定程式路徑。
+需要 **Node.js 24.12 以上**。先執行 `npm ci` 安裝依賴；照片與證據圖片透過隨程式部署的 sharp 套件處理縮圖、自動轉正及移除中繼資料，不需另外安裝 ImageMagick。
 
 Windows 解壓縮後執行 `START-DEMO.cmd`。也可在本資料夾執行以下指令。
 
@@ -32,7 +32,7 @@ npm start
 
 目前維持 Demo 模式（`SIMP_DEMO=1`，預設），建立示範帳號與活動，不會發出真實簡訊或 LINE 通知。這是新的雲端資料庫初始化，不會自動上傳本機的參與紀錄。正式模式仍需要獨立資料庫及下方列出的正式身分驗證設定。
 
-本機若要連線 Turso，將上述兩個值填入未追蹤的 `.env`，再執行 `npm start`。請勿提交 Token。圖片上傳目前仍需要 ImageMagick；Vercel 未配置該工具時，圖片上傳功能不可使用。
+本機若要連線 Turso，將上述兩個值填入未追蹤的 `.env`，再執行 `npm start`。請勿提交 Token。Vercel 部署會包含 sharp 的平台原生依賴，圖片處理後存入 Turso，仍受原有檔案讀取權限保護。
 
 ## 操作方式
 

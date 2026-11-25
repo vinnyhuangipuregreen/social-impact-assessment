@@ -2,7 +2,7 @@ import { filterAsync } from './async.ts';
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { randomInt, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { spawnSync } from 'node:child_process';
+import sharp from 'sharp';
 import { extname } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { DAY, FOLLOW, NOTICE, NOTICE_TEXT, PROGRAMS, STAGES, Problem, date, demand, iso, normalizeCard, normalizePhone, plannedWindow, validAnswers } from './domain.ts';
@@ -290,19 +290,24 @@ async function auth(req:IncomingMessage,res:ServerResponse,path:string,method:st
 
 async function upload(req:IncomingMessage, owner:string, purpose:'photo' | 'evidence') {
   const mime=(req.headers['content-type']??'').split(';')[0];
-  const format:Record<string,string>={'image/jpeg':'jpeg','image/png':'png','image/webp':'webp'};
+  const format:Record<string,'jpeg'|'png'|'webp'>={'image/jpeg':'jpeg','image/png':'png','image/webp':'webp'};
   const isPdf=purpose==='evidence'&&mime==='application/pdf';
   demand(format[mime]||isPdf,415,'FILE_FORMAT','請上傳 JPEG、PNG、WebP'+(purpose==='evidence'?' 或 PDF':'')+'。');
   let data=await bytes(req,5*1024*1024);
   if (isPdf) {
     demand(data.subarray(0,5).toString()==='%PDF-'&&data.subarray(-2048).includes(Buffer.from('%%EOF')),422,'FILE_FORMAT','PDF 檔案格式不正確。');
   } else {
-    const type=format[mime];
-    const result=spawnSync(process.env.SIMP_IMAGE_TOOL || 'magick',['-limit','memory','128MiB','-limit','map','256MiB','-limit','disk','0','-limit','width','8000','-limit','height','8000',
-      type+':-[0]','-auto-orient','-strip','-resize',purpose==='photo'?'1600x1600>':'2400x2400>',type+':-'],
-      {input:data,timeout:5500,maxBuffer:6*1024*1024});
-    demand(!result.error&&result.status===0&&result.stdout?.length>0,422,'FILE_IMAGE','無法讀取圖片，請檢查格式與大小。');
-    data=Buffer.from(result.stdout);
+    try {
+      const image=sharp(data,{limitInputPixels:8000*8000,pages:1});
+      const metadata=await image.metadata();
+      demand(metadata.format===format[mime]&&metadata.width<=8000&&metadata.height<=8000,422,'FILE_IMAGE','圖片格式不符或尺寸超過限制。');
+      const size=purpose==='photo'?1600:2400;
+      data=await image.rotate().resize({width:size,height:size,fit:'inside',withoutEnlargement:true})
+        .toFormat(format[mime]).timeout({seconds:5}).toBuffer();
+    } catch (error) {
+      if (error instanceof Problem) throw error;
+      throw new Problem(422,'FILE_IMAGE','無法讀取圖片，請重新選擇有效的 JPEG、PNG 或 WebP 圖片。');
+    }
   }
   demand(data.length<=5*1024*1024,413,'TOO_LARGE','檔案處理後仍超出大小限制。');
   const fileId=id();

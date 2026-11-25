@@ -2,7 +2,7 @@
   "regions": ["hnd1"],
   "functions": {
     "src/server.ts": {
-      "includeFiles": "{web,migrations}/**",
+      "includeFiles": "{web,migrations,node_modules/@img}/**",
       "maxDuration": 300
     }
   }
