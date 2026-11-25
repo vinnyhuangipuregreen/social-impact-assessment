@@ -89,6 +89,26 @@ test('UAT-01 and UAT-03: a stable identity across LINE and three programs, with 
   assert.equal((await call('/me/enrollments',{jar:participant})).items.length,3);
 });
 
+test('membership cards require uppercase B followed by exactly fourteen ASCII digits',async()=>{
+  const jar={};await otp('0912999998',jar);
+  const fields={name:'卡號格式驗收',member:true,districtId:'north6',chapterId:'prajna'};
+  const digits='0'.repeat(14);
+  for(const card of ['B'+digits.slice(1),'B'+digits+'0','C'+digits,'b'+digits,digits,'B'+digits.slice(1)+'A',
+    'B'+digits.slice(0,7)+' '+digits.slice(7),'B-'+digits,'Ｂ'+'０'.repeat(14)]) {
+    const invalid=await call('/me/profile',{jar,method:'PATCH',body:{...fields,card},expect:422});
+    assert.equal(invalid.error.code,'CARD_INVALID');
+    assert.equal(invalid.error.message,'佛光卡號第一碼為 B，後面接 14 碼數字。');
+  }
+  assert.equal((await call('/me',{jar})).card_mask,null);
+  await call('/me/profile',{jar,method:'PATCH',body:{...fields,card:''},expect:422});
+  const saved=await call('/me/profile',{jar,method:'PATCH',body:{...fields,card:'B'+digits.slice(1)+'7'}});
+  assert.equal(saved.card_mask,'••••0007');
+  assert.equal(saved.member_status,'pending');
+  assert.equal((await call('/me/profile',{jar,method:'PATCH',body:{...fields,card:''}})).card_mask,saved.card_mask);
+  const preview=await call('/admin/dispatch-jobs/preview',{jar:staff,body:{surveyId:'vegrun-follow-T2',audience:'member',cards:'B'+digits.slice(1)}});
+  assert.deepEqual(preview.excluded,{'格式錯誤':1});
+});
+
 test('UAT-02: cross-account LINE attach creates a review case and retains both accounts',async()=>{
   const other={};
   const before=await otp('0900000002',other);
