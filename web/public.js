@@ -6,7 +6,7 @@ export async function startPublic(root,config) {
   let me, events=[], surveys=[], enrollments=[];
   let invite=new URLSearchParams(location.search).get('invite');
   const entry=new URLSearchParams(location.search);
-  let programFilter='', surveyFilter='all', eventFilter=entry.get('event')||'';
+  let programFilter='', surveyProgramFilter='', surveyFilter='all', eventFilter=entry.get('event')||'';
   const openSurvey=entry.get('survey')||'';
   const stateRoute=()=>location.hash.slice(1)||(eventFilter?'activities':'home');
   const signed=()=>Boolean(me?.participant_id);
@@ -58,10 +58,11 @@ export async function startPublic(root,config) {
       }).join('')+'</div>':empty('目前沒有公開場次'))+'</section>';
   }
   function surveyPage() {
-    const listed=surveys.filter(s=>surveyFilter==='all'||s.status===surveyFilter);
+    const listed=surveys.filter(s=>(!surveyProgramFilter||s.program===surveyProgramFilter)&&(surveyFilter==='all'||s.status===surveyFilter));
     return '<section class="container subpage narrow">'+markHeading('我的問卷','查看各場次的填答時程、資格與完成紀錄。')+
       (!signed()?loginGate('登入查看我的問卷','登入後即可填寫已報名活動的問卷。'):
-        '<div class="chips">'+[['all','全部'],['open','可填答'],['done','已完成'],['upcoming','待開放'],['closed','已截止'],['blocked','資格未完成']].map(([key,label])=>btn(label,key===surveyFilter?'chip is-active':'chip','data-survey-filter="'+key+'"')).join('')+'</div>'+
+        '<div class="chips" role="group" aria-label="問卷方案篩選">'+[{code:'',title:'全部方案'},...programs].map(p=>btn(p.title,p.code===surveyProgramFilter?'chip is-active':'chip','data-survey-program="'+p.code+'" aria-pressed="'+(p.code===surveyProgramFilter)+'"')).join('')+'</div>'+
+        '<div class="chips" role="group" aria-label="問卷狀態篩選">'+[['all','全部'],['open','可填答'],['done','已完成'],['upcoming','待開放'],['closed','已截止'],['blocked','資格未完成']].map(([key,label])=>btn(label,key===surveyFilter?'chip is-active':'chip','data-survey-filter="'+key+'" aria-pressed="'+(key===surveyFilter)+'"')).join('')+'</div>'+
       (listed.length?'<div class="stack">'+listed.map(s=>'<article class="card survey-row"><div class="survey-symbol">'+icon('doc',22)+'</div><div class="surv-main"><div class="row-wrap"><span class="label">'+e(pName(s.program))+'</span>'+pill(s.status)+'</div><h2>'+e(s.stageName)+'</h2><span>'+e(s.title)+'</span><p>'+fdate(s.opens_at,s.timezone,true)+' – '+fdate(s.closes_at,s.timezone,true)+'</p>'+(s.status==='blocked'?'<p class="attention">'+e(s.reason)+'</p>':'')+'</div>'+
       (['open','done'].includes(s.status)?btn(s.status==='open'?'開始填答':'查看答覆',s.status==='open'?'primary':'secondary','data-survey="'+e(s.id)+'"','arrow'):'')+'</article>').join('')+'</div>':
         empty('目前沒有符合的問卷',surveys.length?'請試試其他篩選條件。':'完成活動報名後，問卷會顯示於此。')) )+'</section>';
@@ -125,6 +126,7 @@ export async function startPublic(root,config) {
     bind(root,'[data-program]',el=>{eventFilter='';programFilter=el.dataset.program;goto('activities');});
     bind(root,'[data-filter]',el=>{eventFilter='';programFilter=el.dataset.filter;render();});
     bind(root,'[data-survey-filter]',el=>{surveyFilter=el.dataset.surveyFilter;render();});
+    bind(root,'[data-survey-program]',el=>{surveyProgramFilter=el.dataset.surveyProgram;render();});
     bind(root,'[data-enroll]',el=>enroll(el.dataset.enroll,el.hasAttribute('data-cancel')));
     bind(root,'[data-survey]',el=>showSurvey(el.dataset.survey));
     bind(root,'[data-line]',()=>lineLogin());
