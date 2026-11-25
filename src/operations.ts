@@ -1,6 +1,7 @@
 import { filterAsync } from './async.ts';
 import { PROGRAMS, FOLLOW, NOTICE, STAGES, DAY, date, demand, iso, mean, median, normalizeCard, rate } from './domain.ts';
 import { all, audit, consent, demo, digest, eligibility, enrollment, getEvent, getSurvey, id, lookup, one, open, run, token, tx, windowFor } from './store.ts';
+import { assessmentReport } from './assessment-report.ts';
 
 export const gateway = process.env.SIMP_GATEWAY_URL;
 export const tlsOrigin = process.env.SIMP_ORIGIN;
@@ -51,14 +52,16 @@ export async function audience(staff:any, survey:any, input:any) {
   const evaluate=async (profile:any)=>{
     if (count.has(profile.participant_id)) return increment('重複');
     count.add(profile.participant_id);
-    if (staff.org_id && !await inOrg(staff.org_id,profile.chapter_id??profile.district_id)) return increment('超出權限');
+    if (survey.stage!=='STAFF'&&staff.org_id && !await inOrg(staff.org_id,profile.chapter_id??profile.district_id)) return increment('超出權限');
     if (await one('SELECT id FROM responses WHERE event_survey_id=? AND participant_id=? AND effective=1',survey.id,profile.participant_id)) return increment('已完成');
     const reason=await eligibility(survey,profile.participant_id,iso(),true,false);
     if (reason) return increment(reason);
     members.push({id:profile.participant_id, type:profile.member_status, mask:profile.card_mask??'非會員', region:profile.region||'未設定',residenceCity:profile.residence_city,residenceDistrict:profile.residence_district});
   };
-  demand(['member','nonmember'].includes(input.audience),422,'AUDIENCE','請指定會員或非會員。');
-  if (input.audience==='member') {
+  demand(survey.stage==='STAFF'?input.audience==='cadre':['member','nonmember'].includes(input.audience),422,'AUDIENCE','幹部問卷須選指定幹部名單，其餘問卷須選會員或非會員。');
+  if(input.audience==='cadre') {
+    for(const profile of await all('SELECT p.* FROM event_cadres c JOIN profiles p ON p.participant_id=c.participant_id WHERE c.event_id=? AND c.active=1',survey.event_id)) await evaluate(profile);
+  } else if (input.audience==='member') {
     const cards=String(input.cards??'').split(/[,，\n]+/).map(v=>v.trim()).filter(Boolean);
     demand(cards.length>0 && cards.length<=6000,422,'CARD_LIST','請輸入 1 至 6,000 張佛光卡號。');
     const seen=new Set<string>();
@@ -288,7 +291,8 @@ export async function report(staff:any, filters:any) {
       pairedBaseline:row.kept.length>=minimum?mean(row.kept):null,
       lostBaseline:row.lost.length>=minimum?mean(row.lost):null};
   });
-  return {calculationVersion:'1.0.0',kind:'問卷自陳',cutoff:until,filters:{...filters,stage},registered,unique:people.size,
+  return {calculationVersion:'1.1.0',kind:'問卷自陳',cutoff:until,filters:{...filters,stage},registered,unique:people.size,
+    assessment:await assessmentReport(events,filters,until,since,minimum),
     attendance,followResponses,missing,incomparable,lost:t0-matched,
     recovery:rate(cross.filter(r=>r.replied).length,accepted),acceptance:rate(accepted,cross.length),
     after:rate(t1,attendance),paired:rate(matched,t0),maintenance:rate(maintain,maxCount),eventRows,outcomes};

@@ -1,4 +1,4 @@
-import {api,items,bind,bindForms,bindResidenceSelects,residenceCityOptions,brand,btn,close,e,empty,errorSlot,fdate,field,icon,input,message,modal,nfmt,o,pill,select,submit} from './ui.js';
+import {api,items,bind,bindForms,bindResidenceSelects,residenceCityOptions,brand,btn,close,e,empty,errorSlot,fdate,field,icon,input,message,modal,nfmt,o,pill,select,submit,questionFields,questionAnswers,collectionTimeline} from './ui.js';
 
 export async function startPublic(root,config) {
   const programs=config.programs;
@@ -61,7 +61,7 @@ export async function startPublic(root,config) {
     const listed=surveys.filter(s=>(!surveyProgramFilter||s.program===surveyProgramFilter)&&(surveyFilter==='all'||s.status===surveyFilter));
     return '<section class="container subpage narrow">'+markHeading('我的問卷','查看各場次的填答時程、資格與完成紀錄。')+
       (!signed()?loginGate('登入查看我的問卷','登入後即可填寫已報名活動的問卷。'):
-        '<div class="chips" role="group" aria-label="問卷方案篩選">'+[{code:'',title:'全部方案'},...programs].map(p=>btn(p.title,p.code===surveyProgramFilter?'chip is-active':'chip','data-survey-program="'+p.code+'" aria-pressed="'+(p.code===surveyProgramFilter)+'"')).join('')+'</div>'+
+        collectionTimeline(config.collectionTimeline)+'<div class="chips" role="group" aria-label="問卷方案篩選">'+[{code:'',title:'全部方案'},...programs].map(p=>btn(p.title,p.code===surveyProgramFilter?'chip is-active':'chip','data-survey-program="'+p.code+'" aria-pressed="'+(p.code===surveyProgramFilter)+'"')).join('')+'</div>'+
         '<div class="chips" role="group" aria-label="問卷狀態篩選">'+[['all','全部'],['open','可填答'],['done','已完成'],['upcoming','待開放'],['closed','已截止'],['blocked','資格未完成']].map(([key,label])=>btn(label,key===surveyFilter?'chip is-active':'chip','data-survey-filter="'+key+'" aria-pressed="'+(key===surveyFilter)+'"')).join('')+'</div>'+
       (listed.length?'<div class="stack">'+listed.map(s=>'<article class="card survey-row"><div class="survey-symbol">'+icon('doc',22)+'</div><div class="surv-main"><div class="row-wrap"><span class="label">'+e(pName(s.program))+'</span>'+pill(s.status)+'</div><h2>'+e(s.stageName)+'</h2><span>'+e(s.title)+'</span><p>'+fdate(s.opens_at,s.timezone,true)+' – '+fdate(s.closes_at,s.timezone,true)+'</p>'+(s.status==='blocked'?'<p class="attention">'+e(s.reason)+'</p>':'')+'</div>'+
       (['open','done'].includes(s.status)?btn(s.status==='open'?'開始填答':'查看答覆',s.status==='open'?'primary':'secondary','data-survey="'+e(s.id)+'"','arrow'):'')+'</article>').join('')+'</div>':
@@ -74,6 +74,11 @@ export async function startPublic(root,config) {
         const p=programs.find(row=>row.code===en.program);
         const base=related.find(s=>s.stage==='T0');
         const compares=related.filter(s=>['F30','T2','T3'].includes(s.stage)).flatMap(s=>{
+          const bqNew=base?.form.find(q=>q.key==='veg_days_category'),eqNew=s.form.find(q=>q.key==='veg_days_category');
+          if(bqNew?.metricVersion&&bqNew.metricVersion===eqNew?.metricVersion&&JSON.stringify(bqNew.options)===JSON.stringify(eqNew.options)) {
+            const before=bqNew.options.indexOf(base.response.answers.veg_days_category),after=eqNew.options.indexOf(s.response.answers.veg_days_category);
+            return before>=0&&after>=0?['<span class="metric-person">'+e(s.stageName)+' · 全日蔬食 '+e(eqNew.options[after])+'（'+(after-before>0?'+':'')+(after-before)+' 級）</span>']:[];
+          }
           const a=base?.response.answers[p.metric],b=s.response.answers[p.metric],
             aq=base?.form.find(q=>q.key===p.metric),bq=s.form.find(q=>q.key===p.metric);
           return Number.isInteger(a)&&Number.isInteger(b)&&aq?.metricVersion===bq?.metricVersion&&aq?.unit===bq?.unit
@@ -233,6 +238,8 @@ export async function startPublic(root,config) {
     bindForms(box,'form',async ()=>{
       await api('/events/'+encodeURIComponent(id)+'/enrollments',{body:{action:cancel?'cancel':'enroll'}});
       close();await refresh();message(cancel?'已取消報名。':'報名成功，可到「我的問卷」查看時程。');
+      const baseline=!cancel&&surveys.find(s=>s.eventId===id&&s.stage==='T0'&&s.status==='open'&&s.form.some(q=>q.key==='veg_days_category'));
+      if(baseline) {goto('surveys');showSurvey(baseline.id);}
     });
   }
   function showSurvey(id) {
@@ -240,13 +247,10 @@ export async function startPublic(root,config) {
     if(!s||!['open','done'].includes(s.status)) {message(s?.reason??'問卷目前無法開啟。','error');return;}
     const done=s.status==='done';
     const box=modal(s.stageName,'<form class="form-stack"><p class="note">'+e(s.title)+' · v'+e(s.version)+'</p>'+
-      s.form.map(q=>{
-        const answer=s.response?.answers[q.key];
-        return field(q.label,q.type==='integer'?input(q.key,answer??'','number','min="'+e(q.min)+'" max="'+e(q.max)+'" step="1" '+(done?'readonly':q.required?'required':'')):
-          select(q.key,o('','尚未回答')+q.options.map(v=>o(v,v,answer)).join(''),done?'disabled':q.required?'required':''),q.help||'');
-      }).join('')+errorSlot+(done?'<p class="meta">'+icon('check')+' 提交於 '+fdate(s.response.submittedAt,s.timezone,true)+'</p><p class="note word-break">回執識別碼 '+e(s.response.id)+'</p>':submit('提交問卷'))+'</form>');
+      '<section class="survey-identity" aria-label="登入者個人資料"><h3>登入者個人資料</h3><dl><div><dt>姓名</dt><dd>'+e(me.name||'尚未設定')+'</dd></div><div><dt>已驗證手機</dt><dd>'+e(me.identities.find(i=>i.kind==='phone')?.mask??'尚未驗證')+'</dd></div><div><dt>居住地</dt><dd>'+e([me.residence_city,me.residence_district].filter(Boolean).join(' ')||me.region||'尚未設定')+'</dd></div></dl><p class="note">使用已登入的個人資料，不需重複填寫；資料異動請至個人資料頁。手機驗證身分用於串接各階段問卷。</p></section>'+
+      questionFields(s.form,s.response?.answers,done)+errorSlot+(done?'<p class="meta">'+icon('check')+' 提交於 '+fdate(s.response.submittedAt,s.timezone,true)+'</p><p class="note word-break">回執識別碼 '+e(s.response.id)+'</p>':submit('提交問卷'))+'</form>');
     if(!done) bindForms(box,'form',async data=>{
-      const answers=Object.fromEntries(s.form.map(q=>[q.key,data.get(q.key)===''?null:q.type==='integer'?Number(data.get(q.key)):data.get(q.key)]));
+      const answers=questionAnswers(s.form,data);
       await api('/event-surveys/'+encodeURIComponent(id)+'/responses',{body:{versionId:s.versionId,answers}});
       close();await refresh();message('問卷已提交，感謝您的參與。');
     });

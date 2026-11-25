@@ -3,7 +3,7 @@ export const PROGRAMS = [
   { code: 'EARTH', title: '世界地球日 × 森林覺醒', summary: '走進森林，認識原生物種，實踐友善生態的行動。', metric: 'conservation_days_30d', unit: '天', theme: '森林保育', image: 'forest' },
   { code: 'VEG', title: '綠・蔬食評鑑指南', summary: '探索在地蔬食，以每一次用餐支持友善飲食。', metric: 'veg_restaurant_visits_30d', unit: '次', theme: '綠色飲食', image: 'food' },
 ];
-export const STAGES: Record<string, string> = { T0:'活動前問卷', T1A:'活動中微問卷', T1B:'活動後問卷', F30:'30 天追蹤', T2:'90 天追蹤', T3:'180 天追蹤' };
+export const STAGES: Record<string, string> = { T0:'基線問卷', T1A:'活動中微問卷（舊版）', T1B:'後測問卷', F30:'30 天追蹤（舊版）', T2:'3 個月追蹤問卷', T3:'6 個月追蹤問卷', STAFF:'幹部回饋問卷' };
 export const FOLLOW = ['F30','T2','T3'];
 export const NOTICE = process.env.SIMP_DEMO === '0' ? (process.env.SIMP_NOTICE_VERSION || '') : 'demo-v1';
 export const NOTICE_TEXT = process.env.SIMP_DEMO === '0' ? (process.env.SIMP_NOTICE_TEXT || '') : '平台使用已驗證的聯絡方式及活動紀錄，處理報名、問卷、回收統計與去識別成效分析。您可以隨時變更各方案的追蹤同意。';
@@ -62,9 +62,10 @@ export function localDays(anchor: string, zone: string, days: number) {
 }
 export function plannedWindow(event: any, stage: string) {
   switch(stage) {
-    case 'T0': return [localDays(event.starts_at,event.timezone,-14),event.starts_at];
+    case 'T0': return [event.registration_opens??localDays(event.starts_at,event.timezone,-30),event.starts_at];
     case 'T1A': return [event.starts_at,event.ends_at];
     case 'T1B': return [event.ends_at,new Date(Date.parse(event.ends_at)+72*3600000).toISOString()];
+    case 'STAFF': return [localDays(event.ends_at,event.timezone,7),localDays(event.ends_at,event.timezone,14)];
     default: {
       const days = {F30:30,T2:90,T3:180}[stage];
       return [localDays(event.ends_at,event.timezone,days),localDays(event.ends_at,event.timezone,days+7)];
@@ -75,10 +76,14 @@ export function validAnswers(schema: any[], answers: any) {
   demand(answers && typeof answers==='object' && !Array.isArray(answers),422,'ANSWERS','請提供有效的問卷答案。');
   demand(Object.keys(answers).every(k=>schema.some(q=>q.key===k)),422,'QUESTION_UNKNOWN','回答含有問卷版本以外的題目。');
   return Object.fromEntries(schema.map(q=>{
-    const answer = answers[q.key] ?? null;
-    const valid = answer===null ? !q.required : q.type==='integer' ?
-      Number.isInteger(answer) && answer>=q.min && answer<=q.max : q.options.includes(answer);
+    let answer = answers[q.key] ?? null;
+    const valid = answer===null ? !q.required : ['integer','number'].includes(q.type) ?
+      typeof answer==='number'&&Number.isFinite(answer)&&(q.type!=='integer'||Number.isInteger(answer))&&answer>=q.min&&answer<=q.max :
+      q.type==='text'?typeof answer==='string'&&answer.length<=(q.maxLength??1000)&&(!q.required||answer.trim().length>0):
+      q.type==='multichoice'?Array.isArray(answer)&&(!q.required||answer.length>0)&&new Set(answer).size===answer.length&&answer.every(v=>q.options.includes(v)):
+      q.type==='choice'&&q.options.includes(answer);
     demand(valid,422,'ANSWER_INVALID',q.label+' 的答案不符合設定。');
+    if(q.type==='multichoice'&&answer!==null) answer=q.options.filter(v=>answer.includes(v));
     return [q.key,answer];
   }));
 }

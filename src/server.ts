@@ -10,6 +10,7 @@ import { all, audit, bind, consent, createParticipant, demo, digest, eligibility
 import { audience, cancelJob, enqueue, inOrg, jobStats, processQueue, provider, recordConsent, report, scope, tlsOrigin } from './operations.ts';
 import { residenceLocations, resolveResidence, saveResidenceLocation } from './residence.ts';
 import { STAFF_ROLES, staffAccessList, saveStaffAccess } from './staff-access.ts';
+import { ASSESSMENT_STAGES, assessmentQuestions, COLLECTION_TIMELINE } from './assessment.ts';
 
 const requestContext = new AsyncLocalStorage<string>();
 const PARTICIPANT='simp_person', STAFF='simp_staff', LINE='simp_line', LINE_STATE='simp_line_state';
@@ -333,7 +334,7 @@ async function integration(req:IncomingMessage,path:string,method:string) {
   });
 }
 async function participant(req:IncomingMessage,res:ServerResponse,path:string,method:string,url:URL) {
-  if (path==='/config' && method==='GET') return {demo,programs:PROGRAMS,stages:STAGES,noticeVersion:NOTICE,noticeText:NOTICE_TEXT,organizations:await all('SELECT * FROM org_units ORDER BY kind DESC,name'),residenceLocations:await residenceLocations()};
+  if (path==='/config' && method==='GET') return {demo,programs:PROGRAMS,stages:STAGES,assessmentTemplates:Object.fromEntries(ASSESSMENT_STAGES.map(stage=>[stage,assessmentQuestions(stage)])),collectionTimeline:COLLECTION_TIMELINE,noticeVersion:NOTICE,noticeText:NOTICE_TEXT,organizations:await all('SELECT * FROM org_units ORDER BY kind DESC,name'),residenceLocations:await residenceLocations()};
   if (path==='/events' && method==='GET') {
     const events=await all("SELECT * FROM events WHERE status IN ('published','completed') ORDER BY starts_at ASC,id");
     return page(events.filter(e=>!url.searchParams.has('program')||e.program===url.searchParams.get('program')),url);
@@ -415,19 +416,25 @@ async function participant(req:IncomingMessage,res:ServerResponse,path:string,me
     });
   }
   if (path==='/me/enrollments' && method==='GET') {
-    const rows=await all('SELECT en.*,e.program,e.title,e.starts_at,e.timezone FROM enrollments en JOIN events e ON e.id=en.event_id WHERE en.participant_id=? ORDER BY e.starts_at DESC,e.id',await person(req));
+    const owner=await person(req);
+    const rows=await all(`SELECT en.*,e.program,e.title,e.starts_at,e.timezone FROM enrollments en JOIN events e ON e.id=en.event_id WHERE en.participant_id=?
+      UNION ALL SELECT c.event_id,c.participant_id,'cadre',c.assigned_at,NULL,NULL,e.program,e.title,e.starts_at,e.timezone FROM event_cadres c JOIN events e ON e.id=c.event_id
+      WHERE c.participant_id=? AND (c.active=1 OR EXISTS(SELECT 1 FROM responses r JOIN event_surveys s ON s.id=r.event_survey_id WHERE s.event_id=c.event_id AND r.participant_id=c.participant_id AND r.effective=1))
+      AND NOT EXISTS(SELECT 1 FROM enrollments en WHERE en.event_id=c.event_id AND en.participant_id=c.participant_id) ORDER BY starts_at DESC,event_id`,owner,owner);
     return page(rows,url,'event_id');
   }
   if (path==='/me/surveys' && method==='GET') {
     const owner=await person(req);
-    const rows=await all(`SELECT s.id FROM event_surveys s JOIN enrollments en ON en.event_id=s.event_id
-      JOIN events e ON e.id=s.event_id WHERE en.participant_id=? AND en.status<>'cancelled' AND e.status<>'draft' ORDER BY s.opens_at DESC,s.id`,owner);
+    const rows=await all(`SELECT s.id FROM event_surveys s JOIN events e ON e.id=s.event_id WHERE e.status<>'draft' AND
+      ((s.stage<>'STAFF' AND EXISTS(SELECT 1 FROM enrollments en WHERE en.event_id=s.event_id AND en.participant_id=? AND en.status<>'cancelled')) OR
+       (s.stage='STAFF' AND (EXISTS(SELECT 1 FROM event_cadres c WHERE c.event_id=s.event_id AND c.participant_id=? AND c.active=1) OR
+        EXISTS(SELECT 1 FROM responses r WHERE r.event_survey_id=s.id AND r.participant_id=? AND r.effective=1)))) ORDER BY s.opens_at DESC,s.id`,owner,owner,owner);
     return page(await Promise.all(rows.map(async row=>{
       const s=await getSurvey(row.id), en=await enrollment(s.event_id,owner), range=windowFor(s,en);
-      const response=await one('SELECT id,answers_json,submitted_at FROM responses WHERE event_survey_id=? AND participant_id=? AND effective=1',s.id,owner);
+      const response=await one(`SELECT r.id,r.answers_json,r.submitted_at,r.version_id,v.version,v.schema_json FROM responses r JOIN survey_versions v ON v.id=r.version_id WHERE r.event_survey_id=? AND r.participant_id=? AND r.effective=1`,s.id,owner);
       const reason=await eligibility(s,owner);
       return {id:s.id,eventId:s.event_id,title:s.title,program:s.program,stage:s.stage,stageName:STAGES[s.stage],
-        ...range,timezone:s.timezone,versionId:s.version_id,version:s.version,enrollment:en.status,form:JSON.parse(s.schema_json),reason,
+        ...range,timezone:s.timezone,versionId:response?.version_id??s.version_id,version:response?.version??s.version,enrollment:en?.status??'cadre',form:JSON.parse(response?.schema_json??s.schema_json),reason,
         status:response?'done':!reason?'open':iso()<range.opens_at?'upcoming':iso()>=range.closes_at?'closed':'blocked',
         response:response?{id:response.id,answers:JSON.parse(response.answers_json),submittedAt:response.submitted_at}:null};
     })),url);
@@ -435,13 +442,14 @@ async function participant(req:IncomingMessage,res:ServerResponse,path:string,me
   const respond=path.match(/^\/event-surveys\/([^/]+)\/responses$/);
   if (respond&&method==='POST') {
     const owner=await person(req), input=await json(req), survey=await getSurvey(respond[1]);
-    demand(input.versionId===survey.version_id,409,'VERSION_MISMATCH','問卷版本已更新，請重新開啟。');
-    const answers=validAnswers(JSON.parse(survey.schema_json),input.answers);
     return await tx(async ()=>{
       const response=await one('SELECT * FROM responses WHERE event_survey_id=? AND participant_id=? AND effective=1',survey.id,owner);
+      demand(input.versionId===(response?.version_id??survey.version_id),409,'VERSION_MISMATCH','問卷版本已更新，請重新開啟。');
+      const schema=JSON.parse(response?(await one('SELECT schema_json FROM survey_versions WHERE id=?',response.version_id)).schema_json:survey.schema_json);
+      const answers=validAnswers(schema,input.answers);
       const packed=JSON.stringify(answers);
       if (response) {
-        const normalized=JSON.stringify(validAnswers(JSON.parse(survey.schema_json),JSON.parse(response.answers_json)));
+        const normalized=JSON.stringify(validAnswers(schema,JSON.parse(response.answers_json)));
         demand(normalized===packed,409,'ALREADY_SUBMITTED','這份問卷已有一份有效回覆。');
         return {responseId:response.id,submittedAt:response.submitted_at};
       }
@@ -450,6 +458,7 @@ async function participant(req:IncomingMessage,res:ServerResponse,path:string,me
       const responseId=id();
       await run('INSERT INTO responses(id,event_survey_id,participant_id,version_id,answers_json,submitted_at) VALUES (?,?,?,?,?,?)',
         responseId,survey.id,owner,survey.version_id,packed,now);
+      if(survey.stage==='T0'&&Object.hasOwn(answers,'tracking_consent')) await recordConsent(owner,'tracking',survey.program,answers.tracking_consent==='同意');
       await auditReq(owner,'survey.submit',responseId,{eventSurvey:survey.id,version:survey.version});
       return {responseId,submittedAt:now};
     });
@@ -541,12 +550,54 @@ async function administration(req:IncomingMessage,res:ServerResponse,path:string
     });
     return await getEvent(newId);
   }
-  const eventRoute=path.match(/^\/admin\/events\/([^/]+)(?:\/(attendance-imports|roster|surveys|status))?$/);
+  const cadreRoute=path.match(/^\/admin\/events\/([^/]+)\/cadres(?:\/([^/]+))?$/);
+  if(cadreRoute) {
+    await allowed('operator');
+    const event=await getEvent(cadreRoute[1]);await scope(who,event);
+    if(method==='GET'&&!cadreRoute[2]) {
+      await auditReq(who.staff_id,'cadre.read',event.id);
+      return {items:await all(`SELECT c.*,p.name,i.mask AS phone_mask FROM event_cadres c
+      JOIN profiles p ON p.participant_id=c.participant_id LEFT JOIN identities i ON i.participant_id=c.participant_id AND i.kind='phone' AND i.revoked_at IS NULL
+      WHERE c.event_id=? ORDER BY c.active DESC,p.name,c.participant_id`,event.id)};
+    }
+    const input=await json(req);
+    return tx(async()=>{
+      if(method==='POST'&&!cadreRoute[2]) {
+        const phones=String(input.phones??'').split(/[,，\n]+/).map(v=>v.trim()).filter(Boolean);
+        demand(phones.length>0&&phones.length<=6000,422,'CADRE_LIST','請填寫幹部已驗證的手機號碼，每行一筆。');
+        const ids=[];
+        for(const [index,phone] of phones.entries()) {
+          const identity=await one("SELECT i.participant_id FROM identities i JOIN participants p ON p.id=i.participant_id AND p.status='active' WHERE i.kind='phone' AND i.lookup=? AND i.revoked_at IS NULL",lookup(normalizePhone(phone)));
+          demand(identity,422,'CADRE_PHONE','第 '+(index+1)+' 筆手機尚無已驗證的登入帳號，請先請本人登入。');
+          ids.push(identity.participant_id);
+        }
+        for(const pid of new Set(ids)) await run(`INSERT INTO event_cadres VALUES (?,?,1,?,?) ON CONFLICT(event_id,participant_id) DO UPDATE SET active=1,assigned_by=excluded.assigned_by,assigned_at=excluded.assigned_at`,event.id,pid,who.staff_id,iso());
+        await auditReq(who.staff_id,'cadre.assign',event.id,{count:new Set(ids).size});return {count:new Set(ids).size};
+      }
+      demand(method==='PATCH'&&cadreRoute[2]&&typeof input.active==='boolean',422,'CADRE_FIELDS','請指定幹部與啟用狀態。');
+      demand(await one('SELECT participant_id FROM event_cadres WHERE event_id=? AND participant_id=?',event.id,cadreRoute[2]),404,'CADRE_NOT_FOUND','找不到此幹部。');
+      await run('UPDATE event_cadres SET active=?,assigned_by=?,assigned_at=? WHERE event_id=? AND participant_id=?',Number(input.active),who.staff_id,iso(),event.id,cadreRoute[2]);
+      await auditReq(who.staff_id,'cadre.update',event.id,{participantId:cadreRoute[2],active:input.active});return {ok:true};
+    });
+  }
+  const eventRoute=path.match(/^\/admin\/events\/([^/]+)(?:\/(attendance-imports|roster|surveys|status|assessment-setup))?$/);
   if (eventRoute) {
     const [_,eventId,action]=eventRoute;
     const event=await getEvent(eventId);
     await scope(who,event);
     await allowed('operator');
+    if(action==='assessment-setup'&&method==='POST') {
+      demand(event.status==='draft',409,'EVENT_LOCKED','僅草稿場次可套用標準問卷，已發布場次保留原版本。');
+      return tx(async()=>{
+        for(const stage of ASSESSMENT_STAGES) {
+          const version=await one("SELECT id FROM survey_versions WHERE id=? AND status='published'",event.program+'-'+stage+'-assessment-v2');
+          demand(version,409,'VERSION_INVALID','標準問卷尚未發布。');
+          const [opens,closes]=plannedWindow(event,stage);
+          await run(`INSERT INTO event_surveys VALUES (?,?,?,?,?,?,'fixed') ON CONFLICT(event_id,stage) DO UPDATE SET version_id=excluded.version_id,opens_at=excluded.opens_at,closes_at=excluded.closes_at,window_rule='fixed'`,id(),event.id,stage,version.id,opens,closes);
+        }
+        await auditReq(who.staff_id,'event.assessment.setup',event.id);return {ok:true};
+      });
+    }
     if (!action&&method==='PATCH') {
       const input=await json(req), [program,title,region,venue,org,start,end,zone,opens,closes,anchor]=await eventBody(input);
       await scope(who,{org_id:org});
@@ -638,20 +689,24 @@ async function administration(req:IncomingMessage,res:ServerResponse,path:string
     demand(Array.isArray(form)&&form.length>0&&form.length<=40,422,'FORM_SIZE','問卷需要 1 至 40 個問題。');
     const keys=new Set();
     const schema=form.map(q=>{
-      demand(q&&/^[a-z][a-z0-9_]{1,63}$/.test(q.key)&&!keys.has(q.key)&&clean(q.label,300)&&['integer','choice'].includes(q.type),
+      demand(q&&/^[a-z][a-z0-9_]{1,63}$/.test(q.key)&&!keys.has(q.key)&&clean(q.label,300)&&['integer','number','choice','multichoice','text'].includes(q.type),
         422,'QUESTION_FIELDS','題目須包含唯一英文代碼、標題及有效題型。');
       keys.add(q.key);
       const core=PROGRAMS.find(p=>p.code===input.program)!.metric===q.key;
-      if (q.type==='integer') {
+      demand(!core||q.type==='integer',422,'METRIC_TYPE','既有核心指標須使用整數題，避免變更既有計量單位。');
+      if (['integer','number'].includes(q.type)) {
         demand(Number.isSafeInteger(q.min)&&Number.isSafeInteger(q.max)&&q.min>=0&&q.min<=q.max&&q.max<=10000000,
           422,'QUESTION_LIMIT','請檢查數字題上下限。');
         if (core) demand(clean(q.unit,20)&&clean(q.metricVersion,30),422,'METRIC_VERSION','核心題須指定單位與指標定義版本。');
+      } else if(q.type==='text') {
+        demand(!core&&Number.isInteger(q.maxLength)&&q.maxLength>0&&q.maxLength<=4000,422,'QUESTION_LIMIT','文字題字數上限須為 1 至 4,000。');
       } else {
         demand(!core&&Array.isArray(q.options)&&q.options.length>1&&q.options.length<=20&&
           q.options.every(x=>clean(x,80)===x&&x)&&new Set(q.options).size===q.options.length,422,'QUESTION_OPTIONS','請檢查選項或核心題的題型。');
       }
       return {key:q.key,label:clean(q.label,300),type:q.type,required:q.required===true,help:clean(q.help,300),
-        ...(q.type==='integer'?{min:q.min,max:q.max,unit:clean(q.unit,20),metricVersion:clean(q.metricVersion,30)||null}:{options:q.options})};
+        unit:clean(q.unit,20),metricVersion:clean(q.metricVersion,30)||null,
+        ...(['integer','number'].includes(q.type)?{min:q.min,max:q.max}:q.type==='text'?{maxLength:q.maxLength}:{options:q.options})};
     });
     return await tx(async ()=>{
       const version=(await one('SELECT COALESCE(MAX(version),0)+1 AS n FROM survey_versions WHERE program=? AND stage=?',input.program,input.stage)).n;
@@ -842,6 +897,9 @@ async function administration(req:IncomingMessage,res:ServerResponse,path:string
           }
         }
         // Preserve original answers under the historical ID and create canonical effective revisions.
+        for(const cadre of await all('SELECT * FROM event_cadres WHERE participant_id=?',source)) {
+          await run(`INSERT INTO event_cadres VALUES (?,?,?,?,?) ON CONFLICT(event_id,participant_id) DO UPDATE SET active=MAX(event_cadres.active,excluded.active)`,cadre.event_id,target,cadre.active,cadre.assigned_by,cadre.assigned_at);
+        }
         for (const reply of await all('SELECT * FROM responses WHERE participant_id=? AND effective=1',source)) {
           await run('UPDATE responses SET effective=0 WHERE id=?',reply.id);
           await run('INSERT INTO responses(id,event_survey_id,participant_id,version_id,answers_json,submitted_at,revision,replaces_id) VALUES (?,?,?,?,?,?,?,?)',
@@ -932,7 +990,7 @@ async function administration(req:IncomingMessage,res:ServerResponse,path:string
     demand(original,404,'RESPONSE_NOT_FOUND','找不到有效回執。');
     const survey=await getSurvey(original.event_survey_id);
     await scope(who,survey);
-    const schema=JSON.parse(survey.schema_json);
+    const schema=JSON.parse((await one('SELECT schema_json FROM survey_versions WHERE id=?',original.version_id)).schema_json);
     if (method==='GET'&&!responseRoute[2]) {
       await auditReq(who.staff_id,'response.read',original.id);
       return {id:original.id,title:survey.title,stage:survey.stage,form:schema,answers:JSON.parse(original.answers_json)};
@@ -960,7 +1018,9 @@ async function administration(req:IncomingMessage,res:ServerResponse,path:string
       return exportCsv(res,'simp-outcomes',[
         ['資料截止',output.cutoff],['計算版本',output.calculationVersion],['條件',JSON.stringify(output.filters)],
         ['場次','方案','實到','後測分子','後測分母','配對分子','配對分母','版本與截止'],...output.eventRows.map(r=>[
-          r.title,r.program,r.attendance,r.after.numerator,r.after.denominator,r.paired.numerator,r.paired.denominator,JSON.stringify(r.versions)])
+          r.title,r.program,r.attendance,r.after.numerator,r.after.denominator,r.paired.numerator,r.paired.denominator,JSON.stringify(r.versions)]),
+        ['新版全日蔬食評估（與舊餐數分開）'],['方案','基線','後測','知識配對數','知識平均提升','回溯配對數','回溯平均提升','連結更緊密人數','3/6月追蹤','重複追蹤配對','衰退比例','幹部回覆','幹部總時數','幹部能力提升人數','能力平均提升','幹部無謂比例','幹部活動歸因比例'],
+        ...output.assessment.map(r=>[r.program,r.baseline,r.post,r.knowledgePairs,r.knowledgeGain,r.recalledPairs,r.recalledGain,r.connected,JSON.stringify(r.follow),r.repeatPairs,r.dropOff,r.cadreCount,r.cadreHours,r.cadreImproved,r.cadreAverageGain,r.cadreDeadweight,r.cadreActivityShare])
       ]);
     }
     return output;

@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { all, exec, one, run, tx } from './database.ts';
 export { all, one, run, tx } from './database.ts';
 import { DAY, NOTICE, NOTICE_TEXT, PROGRAMS, STAGES, FOLLOW, iso, plannedWindow, questions, demand } from './domain.ts';
+import { ASSESSMENT_STAGES, assessmentQuestions } from './assessment.ts';
 
 export const demo = process.env.SIMP_DEMO !== '0';
 const secret = process.env.SIMP_SECRET || (demo ? 'SIMP local demo key, never use with real data' : '');
@@ -83,10 +84,13 @@ export function windowFor(survey:any, registration:any) {
 export async function eligibility(survey:any, person:string, now=iso(), notification=false, checkTime=true) {
   if (!['published','completed'].includes(survey.event_status)) return '場次已關閉';
   const registration = await enrollment(survey.event_id,person);
-  if (!registration || registration.status==='cancelled') return '未報名或已取消';
+  if(survey.stage==='STAFF') {
+    if(!await one('SELECT participant_id FROM event_cadres WHERE event_id=? AND participant_id=? AND active=1',survey.event_id,person)) return '未列入本場活動幹部名單';
+  } else if (!registration || registration.status==='cancelled') return '未報名或已取消';
   if (['T1A','T1B',...FOLLOW].includes(survey.stage) && registration.status!=='attended'
       && !(survey.program==='VEG' && survey.stage!=='T1A')) return '未完成簽到';
   if (!await consent(person,'privacy','*')) return '尚未確認個資告知';
+  if(JSON.parse(survey.schema_json).some(q=>['veg_days_category','cadre_role'].includes(q.key))&&!await one("SELECT id FROM identities WHERE participant_id=? AND kind='phone' AND revoked_at IS NULL",person)) return '請先在個人資料完成手機驗證';
   if (FOLLOW.includes(survey.stage) && !await consent(person,'tracking',survey.program)) return '未同意後續追蹤';
   if (notification && !(await one('SELECT line_reachable FROM profiles WHERE participant_id=?',person))?.line_reachable) return 'LINE OA 無法觸達';
   if (checkTime) {
@@ -106,6 +110,7 @@ await tx(async ()=>{
   for (const p of PROGRAMS) {
     await run('INSERT OR IGNORE INTO programs VALUES (?,?,?,?,?)',p.code,p.title,p.summary,p.metric,p.unit);
     for (const stage of Object.keys(STAGES)) {
+      if(stage==='STAFF') continue;
       if (stage==='T1A' && p.code==='VEG') continue;
       await run('INSERT OR IGNORE INTO survey_versions VALUES (?,?,?,?,?,?,?,?)',
         p.code+'-'+stage+'-1',p.code,stage,1,'published',JSON.stringify(questions(p.code,stage)),iso(),iso());
@@ -117,6 +122,23 @@ await tx(async ()=>{
     ['bright','north3','chapter','光明分會']
   ]) await run('INSERT OR IGNORE INTO org_units VALUES (?,?,?,?)',key,parent,kind,label);
   if (demo && !await one('SELECT id FROM staff LIMIT 1')) await seedDemo();
+  if(!await one("SELECT value FROM app_settings WHERE key='assessment_pack_v2'")) {
+    for(const program of PROGRAMS) {
+      for(const stage of ASSESSMENT_STAGES) {
+        const versionId=program.code+'-'+stage+'-assessment-v2';
+        const next=(await one('SELECT COALESCE(MAX(version),0)+1 AS n FROM survey_versions WHERE program=? AND stage=?',program.code,stage)).n;
+        await run('INSERT OR IGNORE INTO survey_versions VALUES (?,?,?,?,?,?,?,?)',versionId,program.code,stage,next,'published',JSON.stringify(assessmentQuestions(stage)),iso(),iso());
+        for(const event of await all("SELECT * FROM events WHERE program=? AND status IN ('draft','published','completed')",program.code)) {
+          const current=await one('SELECT * FROM event_surveys WHERE event_id=? AND stage=?',event.id,stage);
+          if(current&&current.version_id!==program.code+'-'+stage+'-1') continue;
+          const [opens,closes]=plannedWindow(event,stage);
+          if(current) await run('UPDATE event_surveys SET version_id=? WHERE id=?',versionId,current.id);
+          else await run('INSERT INTO event_surveys VALUES (?,?,?,?,?,?,?)',id(),event.id,stage,versionId,opens,closes,'fixed');
+        }
+      }
+    }
+    await run("INSERT INTO app_settings VALUES ('assessment_pack_v2','1')");
+  }
 });
 
 if (process.env.TURSO_DATABASE_URL) console.log('SIA database ready', {
@@ -146,6 +168,7 @@ async function seedDemo() {
     await run('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',slug,program,title,region,venue,org,
       event.starts_at,event.ends_at,event.timezone,iso(Number(shift)*DAY-21*DAY),event.starts_at,status,'event_end',iso());
     for (const stage of Object.keys(STAGES)) {
+      if(stage==='STAFF') continue;
       if (stage==='T1A' && program==='VEG') continue;
       const [opens,closes]=plannedWindow(event,stage);
       await run('INSERT INTO event_surveys VALUES (?,?,?,?,?,?,?)',slug+'-'+stage,slug,stage,program+'-'+stage+'-1',opens,closes,'fixed');

@@ -56,6 +56,9 @@ before(async()=>{
   });
   origin='http://127.0.0.1:'+port;
   db=new DatabaseSync(database);
+  // Keep these pre-existing fixtures on their historical schema for regression coverage.
+  db.exec(`UPDATE event_surveys SET version_id=(SELECT e.program||'-'||event_surveys.stage||'-1' FROM events e WHERE e.id=event_surveys.event_id)
+    WHERE event_id IN ('vegrun','earth','veg') AND stage<>'STAFF'`);
   await login('operator',staff);
   sample.me=await otp('0900000001',sample);
 });
@@ -222,7 +225,7 @@ test('photo uploads decode without an external image tool, resize, orient and st
 
 test('UAT-13 and UAT-16: immutable version assignment and independent snapshot approval',async()=>{
   const forms=await call('/admin/survey-versions?program=VGR&stage=T0',{jar:staff});
-  const old=forms.items[0];
+  const old=forms.items.find(row=>row.id==='VGR-T0-1');
   const created=await call('/admin/survey-versions',{jar:staff,body:{program:'VGR',stage:'T0',form:old.form}});
   await call('/admin/survey-versions/'+created.id+'/publish',{jar:staff,body:{}});
   const existing=(await call('/admin/events',{jar:staff})).items.find(ev=>ev.id==='vegrun');
@@ -235,7 +238,7 @@ test('UAT-13 and UAT-16: immutable version assignment and independent snapshot a
   await call('/admin/metric-snapshots/'+snap.id+'/review',{jar:reviewer,body:{approve:true,reason:'核對證據與計算版本'}});
   const saved=(await call('/admin/metric-snapshots',{jar:reviewer})).items.find(r=>r.id===snap.id);
   assert.equal(saved.status,'published');
-  assert.equal(saved.report.calculationVersion,'1.0.0');
+  assert.equal(saved.report.calculationVersion,'1.1.0');
   assert.equal(saved.evidenceIds[0],evidence.id);
   assert.ok(saved.report.cutoff);
 });
@@ -315,7 +318,8 @@ test('Version mismatch is excluded while a valid 0 → 3 pair is retained',async
   schema[0].metricVersion='uat-2';
   const later=new Date(Date.now()-3600000).toISOString();
   const earlier=new Date(Date.now()-95*86400000).toISOString();
-  db.prepare("INSERT INTO survey_versions VALUES (?,'VGR','T2',2,'published',?,?,?)").run('uat-incompatible-t2',JSON.stringify(schema),earlier,earlier);
+  const next=db.prepare("SELECT MAX(version)+1 AS n FROM survey_versions WHERE program='VGR' AND stage='T2'").get().n;
+  db.prepare("INSERT INTO survey_versions VALUES (?,'VGR','T2',?,'published',?,?,?)").run('uat-incompatible-t2',next,JSON.stringify(schema),earlier,earlier);
   db.prepare("INSERT INTO enrollments VALUES (?,?, 'attended',?,?,?)").run(s,owner.participant_id,earlier,earlier,earlier);
   const insert=db.prepare('INSERT INTO responses(id,event_survey_id,participant_id,version_id,answers_json,submitted_at) VALUES (?,?,?,?,?,?)');
   insert.run('uat-mismatch-t0',s+'-T0',owner.participant_id,'VGR-T0-1','{"diet_meals_7d":0}',earlier);
@@ -412,6 +416,93 @@ test('only system administrators maintain locations and disabled choices preserv
   assert.equal(catalog.districts.find(d=>d.id===area.id).active,0);
   assert.ok(db.prepare("SELECT COUNT(*) n FROM audit WHERE action LIKE 'residence.%' AND actor='admin'").get().n>=4);
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
+});
+
+test('all three assessment packs use phone identity, consent, typed answers and an assigned cadre audience',async()=>{
+  const root=await login('admin'),cadre={},runner={};
+  const cadreMe=await otp('0912888801',cadre);await allow(cadre);
+  await line('assessment-cadre',cadre);
+  const runnerMe=await otp('0912888802',runner);await allow(runner);
+  const config=await call('/config');
+  assert.deepEqual(config.assessmentTemplates.T0.find(q=>q.key==='veg_days_category'),config.assessmentTemplates.T2.find(q=>q.key==='veg_days_category'));
+  assert.deepEqual(config.assessmentTemplates.T2,config.assessmentTemplates.T3);
+  const now=hours=>new Date(Date.now()+hours*3600000).toISOString();
+  for(const program of ['VGR','EARTH','VEG']) {
+    const event=await call('/admin/events',{jar:root,body:{program,title:'新版評估 '+program,region:'臺北市',venue:'驗收',orgId:'prajna',timezone:'Asia/Taipei',startsAt:now(2),endsAt:now(3),registrationOpens:now(-24),registrationCloses:now(1)}});
+    await call('/admin/events/'+event.id+'/assessment-setup',{jar:root,body:{}});
+    const stages=db.prepare('SELECT * FROM event_surveys WHERE event_id=?').all(event.id);
+    assert.equal(stages.length,5);
+    await call('/admin/events/'+event.id+'/status',{jar:root,body:{status:'published'}});
+    await call('/events/'+event.id+'/enrollments',{jar:runner,body:{}});
+    const survey=stage=>stages.find(row=>row.stage===stage);
+    const submit=(stage,answers,jar=runner,expect=200)=>call('/event-surveys/'+survey(stage).id+'/responses',{jar,body:{versionId:survey(stage).version_id,answers},expect});
+    const baseline={tracking_consent:'同意',veg_days_category:'1 天',knowledge:2};
+    assert.ok((await call('/me/surveys',{jar:runner})).items.every(row=>row.eventId!==event.id||!row.form.some(q=>['email','phone','name'].includes(q.key))));
+    await submit('T0',{...baseline,phone:'forged'},runner,422);
+    await submit('T0',{...baseline,veg_days_category:'7 天'},runner,422);
+    await submit('T0',baseline);
+    assert.equal((await call('/me',{jar:runner})).consents.tracking[program],true);
+    db.prepare('UPDATE event_surveys SET opens_at=?,closes_at=? WHERE event_id=?').run(now(-1),now(1),event.id);
+    await call('/admin/events/'+event.id+'/attendance-imports',{jar:root,body:{participantIds:[runnerMe.participant_id]}});
+    const post={knowledge_before_recalled:1,knowledge:4,action_commitments:['每週增加一天蔬食','邀家人一起吃蔬食'],community_connection:5};
+    await submit('T1B',{...post,action_commitments:['不在選項內']},runner,422);
+    const savedPost=await submit('T1B',post);
+    assert.equal((await submit('T1B',{...post,action_commitments:[...post.action_commitments].reverse()})).responseId,savedPost.responseId);
+    await call('/me/consents',{jar:runner,body:tracking(program,false)});
+    const follow={veg_days_category:'2 至 3 天',counterfactual:'大概只有現在的一半',activity_share:'75%'};
+    const denied=await submit('T2',follow,runner,403);assert.equal(denied.error.message,'未同意後續追蹤');
+    await call('/me/consents',{jar:runner,body:tracking(program,true)});
+    await submit('T2',follow);await submit('T3',{...follow,veg_days_category:'4 天以上'});
+    const officer={cadre_role:'補給站',hours:12.5,planning_before:2,planning_after:4,leadership_before:2,leadership_after:4,
+      communication_before:2,communication_after:4,response_before:2,response_after:4,counterfactual:'跟現在一樣',activity_share:'50%',improvement:'改善補給動線'};
+    await submit('STAFF',officer,cadre,403);
+    assert.ok(!(await call('/me/surveys',{jar:cadre})).items.some(row=>row.eventId===event.id));
+    await call('/admin/events/'+event.id+'/cadres',{jar:await login('north3-ops'),body:{phones:'0912888801'},expect:403});
+    await call('/admin/events/'+event.id+'/cadres',{jar:root,body:{phones:'0912888801\n0999999999'},expect:422});
+    assert.equal((await call('/admin/events/'+event.id+'/cadres',{jar:root})).items.length,0);
+    await call('/admin/events/'+event.id+'/cadres',{jar:root,body:{phones:'0912888801\n0912888801'}});
+    assert.equal((await call('/admin/events/'+event.id+'/cadres',{jar:root})).items.length,1);
+    assert.ok((await call('/me/surveys',{jar:cadre})).items.some(row=>row.eventId===event.id&&row.stage==='STAFF'&&row.status==='open'));
+    const preview=await call('/admin/dispatch-jobs/preview',{jar:root,body:{surveyId:survey('STAFF').id,audience:'cadre'}});
+    assert.equal(preview.count,1);
+    await submit('STAFF',{...officer,hours:-1},cadre,422);
+    await submit('STAFF',{...officer,improvement:'x'.repeat(1001)},cadre,422);
+    await submit('STAFF',officer,cadre);
+    await call('/admin/events/'+event.id+'/cadres/'+cadreMe.participant_id,{jar:root,method:'PATCH',body:{active:false}});
+    assert.ok((await call('/me/surveys',{jar:cadre})).items.some(row=>row.eventId===event.id&&row.stage==='STAFF'&&row.status==='done'));
+    const result=await call('/admin/reports/outcomes?eventId='+event.id,{jar:root});
+    const summary=result.assessment.find(row=>row.program===program);
+    assert.equal(summary.baseline,1);assert.equal(summary.knowledgePairs,1);assert.equal(summary.connected,1);assert.equal(summary.cadreImproved,1);
+    assert.equal(summary.follow[0].improved,1);assert.equal(summary.repeatPairs,1);assert.equal(summary.cadreHours,null);
+    assert.equal(summary.knowledgeGain,null);assert.equal(result.outcomes[0].sample,0);
+    const csv=await call('/admin/reports/export?eventId='+event.id,{jar:root});assert.match(csv,/新版全日蔬食評估/);assert.doesNotMatch(csv,/091288880[12]/);
+    const insert=db.prepare('INSERT INTO responses(id,event_survey_id,participant_id,version_id,answers_json,submitted_at) VALUES (?,?,?,?,?,?)');
+    for(let index=0;index<4;index++) {
+      const pid='report-fixture-'+program+'-'+index;
+      db.prepare('INSERT INTO participants(id,created_at) VALUES (?,?)').run(pid,now(-24));
+      db.prepare('INSERT INTO profiles(participant_id) VALUES (?)').run(pid);
+      db.prepare("INSERT INTO enrollments VALUES (?,?,'attended',?,?,NULL)").run(event.id,pid,now(-24),now(-1));
+      for(const [stage,answers] of [['T0',baseline],['T1B',post],['T2',follow],['T3',{...follow,veg_days_category:index<2?'1 天':'4 天以上'}],['STAFF',officer]]) {
+        insert.run(pid+'-'+stage,survey(stage).id,pid,survey(stage).version_id,JSON.stringify(answers),now(-.01));
+      }
+    }
+    const measured=(await call('/admin/reports/outcomes?eventId='+event.id,{jar:root})).assessment.find(row=>row.program===program);
+    assert.equal(measured.knowledgeGain,2);assert.equal(measured.knowledgePairs,5);assert.equal(measured.connected,5);
+    assert.equal(measured.cadreHours,62.5);assert.equal(measured.cadreAverageGain,2);assert.equal(measured.cadreImproved,5);
+    assert.equal(measured.follow[0].deadweight,.5);assert.equal(measured.follow[0].activityShare,.75);assert.equal(measured.follow[0].otherAttribution,.25);
+    assert.equal(measured.dropOff,.4);assert.equal(measured.cadreDeadweight,1);assert.equal(measured.cadreActivityShare,.5);
+    db.prepare("UPDATE event_surveys SET closes_at=? WHERE event_id=? AND stage='T0'").run(now(-.1),event.id);
+    await call('/events/'+event.id+'/enrollments',{jar:cadre,body:{}});
+    assert.equal((await submit('T0',baseline,cadre,409)).error.code,'SURVEY_CLOSED');
+  }
+  const before=(await call('/me/surveys',{jar:runner})).items.filter(row=>row.response).map(row=>row.response.id).sort();
+  await otp('0912888803',runner,'change');
+  assert.equal((await call('/me',{jar:runner})).participant_id,runnerMe.participant_id);
+  assert.deepEqual((await call('/me/surveys',{jar:runner})).items.filter(row=>row.response).map(row=>row.response.id).sort(),before);
+  assert.equal(db.prepare("SELECT version_id FROM event_surveys WHERE id='vegrun-follow-T0'").get().version_id,'VGR-T0-assessment-v2');
+  const historical=(await call('/me/surveys',{jar:sample})).items.find(row=>row.id==='vegrun-follow-T0');
+  assert.equal(historical.versionId,'VGR-T0-1');assert.equal(historical.form[0].key,'diet_meals_7d');
+  assert.equal((await call('/event-surveys/'+historical.id+'/responses',{jar:sample,body:{versionId:historical.versionId,answers:historical.response.answers}})).responseId,historical.response.id);
 });
 
 test('Both app entry points and their same-origin assets are served',async()=>{

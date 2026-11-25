@@ -1,4 +1,4 @@
-import {api,items,bind,bindForms,bindResidenceSelects,residenceCityOptions,brand,btn,close,e,empty,errorSlot,fdate,field,fraction,groupNames,icon,input,message,modal,nfmt,o,percent,pill,query,select,submit,zoneDate} from './ui.js';
+import {api,items,bind,bindForms,bindResidenceSelects,residenceCityOptions,brand,btn,close,e,empty,errorSlot,fdate,field,fraction,groupNames,icon,input,message,modal,nfmt,o,percent,pill,query,select,submit,zoneDate,questionFields,questionAnswers,collectionTimeline} from './ui.js';
 
 export async function startAdmin(root,config) {
   const programMap=new Map(config.programs.map(p=>[p.code,p]));
@@ -174,12 +174,15 @@ export async function startAdmin(root,config) {
     const actionMap={draft:[['published','正式發布'],['cancelled','取消場次']],published:[['completed','標記已完成'],['cancelled','取消場次']],completed:[['archived','封存場次'],['cancelled','取消場次']]};
     const actionNames=actionMap[ev.status]??[];
     const box=modal(ev.title,'<div class="form-stack"><div class="row-between"><span>'+e(P(ev.program))+' · '+e(ev.timezone)+'</span>'+pill(ev.status)+'</div>'+
-      '<div class="row-wrap">'+(ev.status==='draft'?btn('編輯基本資料','secondary small','data-ev-edit')+btn('設定問卷階段','secondary small','data-stage-edit','add'):'')+
+      collectionTimeline(config.collectionTimeline)+'<div class="row-wrap">'+(ev.status==='draft'?btn('編輯基本資料','secondary small','data-ev-edit')+btn('設定問卷階段','secondary small','data-stage-edit','add')+btn('套用四類標準問卷','secondary small','data-assessment-setup'):'')+
+      btn('幹部名單','secondary small','data-cadres')+
       actionNames.map(([status,label])=>btn(label,status==='published'?'primary small':'quiet small','data-status="'+status+'"')).join('')+
       (['published','completed'].includes(ev.status)?btn('場次連結','secondary small','data-event-link','diagonal'):'')+'</div>'+
       table(['階段','版本','開放時間','截止時間',''],ev.surveys.map(s=>[e(stages[s.stage]),'v'+s.version,fdate(s.opens_at,ev.timezone,true),fdate(s.closes_at,ev.timezone,true),
-        ev.status==='draft'?btn('移除','quiet small','data-remove-stage="'+e(s.stage)+'"'):'']))+'</div>',{wide:true});
+        ev.status==='draft'?btn('移除','quiet small','data-remove-stage="'+e(s.stage)+'"'):btn('問卷連結','quiet small','data-survey-link="'+e(s.id)+'"')]))+'</div>',{wide:true});
     bind(box,'[data-ev-edit]',()=>eventEditor(ev));
+    bind(box,'[data-cadres]',()=>cadreEditor(ev));
+    bind(box,'[data-assessment-setup]',()=>confirmAction('套用四類標準問卷','將設定基線、後測、3／6 個月追蹤及幹部回饋，取代草稿中相同階段的設定。',()=>api('/admin/events/'+ev.id+'/assessment-setup',{body:{}})));
     bind(box,'[data-event-link]',()=>entryLink('event',ev.id));
     bind(box,'[data-survey-link]',el=>entryLink('survey',el.dataset.surveyLink));
     function entryLink(key,id) {
@@ -193,6 +196,14 @@ export async function startAdmin(root,config) {
     bind(box,'[data-stage-edit]',()=>stageEditor(ev));
     bind(box,'[data-status]',el=>confirmAction(el.textContent,'此操作將更新所有前後台的場次狀態。',()=>api('/admin/events/'+ev.id+'/status',{body:{status:el.dataset.status}})));
     bind(box,'[data-remove-stage]',el=>confirmAction('移除階段','此操作將移除草稿場次的問卷設定。',()=>api('/admin/events/'+ev.id+'/surveys',{body:{stage:el.dataset.removeStage,remove:true}})));
+  }
+  async function cadreEditor(ev) {
+    const data=await api('/admin/events/'+ev.id+'/cadres');
+    const box=modal('幹部回饋填答名單','<div class="form-stack"><p>'+e(ev.title)+'</p><p class="note">只有本名單中啟用的幹部可填寫；不需另外報名跑者活動。請先請本人完成手機驗證登入。</p>'+
+      table(['姓名','手機','狀態','操作'],data.items.map(row=>[e(row.name||'未設定'),e(row.phone_mask),row.active?'啟用':'停用',btn(row.active?'停用':'啟用','secondary small','data-cadre="'+e(row.participant_id)+'" data-active="'+(!row.active)+'"')]))+
+      '<form class="form-stack">'+field('新增幹部手機號碼','<textarea name="phones" rows="4" required placeholder="每行一筆已驗證手機號碼"></textarea>')+errorSlot+submit('加入幹部名單')+'</form></div>',{wide:true});
+    bindForms(box,'form',async values=>{await api('/admin/events/'+ev.id+'/cadres',{body:{phones:values.get('phones')}});await cadreEditor(ev);message('幹部名單已更新。');});
+    bind(box,'[data-cadre]',async el=>{try{await api('/admin/events/'+ev.id+'/cadres/'+encodeURIComponent(el.dataset.cadre),{method:'PATCH',body:{active:el.dataset.active==='true'}});await cadreEditor(ev);}catch(error){message(error.message,'error');}});
   }
   async function stageEditor(ev) {
     try {
@@ -236,7 +247,7 @@ export async function startAdmin(root,config) {
     target.innerHTML=title('問卷與版本','管理問卷題目、指標口徑與發布狀態。',can('operator')?btn('建立新版本','primary','data-new-ver','add'):'')+
       section('問卷版本清單','<form class="inline-form">'+select('program',o('','全部方案',versionProgram)+pOptions(versionProgram),'aria-label="依方案篩選"')+
       select('stage',o('','全部階段',versionStage)+stageOptions(versionStage),'aria-label="依階段篩選"')+submit('套用','secondary')+'</form>'+
-      table(['方案','階段','版本','題數','狀態','操作'],result.items.map(v=>[e(P(v.program)),e(stages[v.stage]),'v'+v.version,v.form.length,pill(v.status),
+      table(['方案','階段','版本','作答欄位數','狀態','操作'],result.items.map(v=>[e(P(v.program)),e(stages[v.stage]),'v'+v.version,v.form.length,pill(v.status),
         rowActions(btn('查看','secondary small','data-view-ver="'+e(v.id)+'"'),
           can('operator')?btn('複製成草稿','quiet small','data-copy-ver="'+e(v.id)+'"'):'',
           ['draft','published'].includes(v.status)?btn(v.status==='draft'?'發布':'停用','quiet small','data-ver-status="'+e(v.id)+'"'):'')]))+pagination(result,'versions'));
@@ -246,7 +257,7 @@ export async function startAdmin(root,config) {
     bind(target,'[data-view-ver]',el=>{
       const v=result.items.find(v=>v.id===el.dataset.viewVer);
       modal(P(v.program)+' · '+stages[v.stage],' <p class="note">v'+v.version+'</p>'+table(['題目','代碼','資料格式','指標版本'],v.form.map(q=>[e(q.label),e(q.key),
-        e(q.type==='integer'?q.min+'–'+q.max+' '+(q.unit??''):q.options.join('、')),e(q.metricVersion??'—')])),{wide:true});
+        e(['integer','number'].includes(q.type)?q.min+'–'+q.max+' '+(q.unit??''):q.type==='text'?'文字，上限 '+q.maxLength+' 字':q.options.join('、')),e(q.metricVersion??'—')])),{wide:true});
     });
     bind(target,'[data-ver-status]',el=>{
       const v=result.items.find(v=>v.id===el.dataset.verStatus);
@@ -256,32 +267,36 @@ export async function startAdmin(root,config) {
   }
   function questionEditor(version) {
     const box=modal('建立問卷草稿','<form class="form-stack">'+cols(field('方案',select('program',pOptions(version?.program))),field('階段',select('stage',stageOptions(version?.stage))))+
-      '<div data-questions></div>'+btn('新增題目','secondary','data-add-question','add')+errorSlot+submit('儲存新草稿')+'</form>',{wide:true});
+      btn('載入標準題目','secondary','data-standard-questions')+'<div data-questions></div>'+btn('新增題目','secondary','data-add-question','add')+errorSlot+submit('儲存新草稿')+'</form>',{wide:true});
     const area=box.querySelector('[data-questions]');
     function add(q={}) {
       const element=document.createElement('fieldset');element.className='question-block';
       element.innerHTML='<legend>問卷題目</legend>'+cols(field('題目代碼',input('key',q.key??'','text','pattern="[a-z][a-z0-9_]{1,63}" required')),
-        field('題型',select('type',o('integer','整數',q.type)+o('choice','單選',q.type))))+
+        field('題型',select('type',o('integer','整數',q.type)+o('number','數值（可含小數）',q.type)+o('choice','單選',q.type)+o('multichoice','複選',q.type)+o('text','文字',q.type))))+
         field('題目文字',input('label',q.label??'','text','required maxlength="300"'))+field('填答提示',input('help',q.help??'','text','maxlength="300"'))+
         '<div data-number>'+cols(field('下限',input('min',q.min??0,'number','min="0"')),field('上限',input('max',q.max??21,'number','min="0"')),
         field('單位',input('unit',q.unit??'')),field('指標定義版本',input('metricVersion',q.metricVersion??'')))+'</div>'+
         '<div data-options>'+field('選項（每行一項）','<textarea name="options" rows="3">'+e(q.options?.join('\n')??'')+'</textarea>')+'</div>'+
+        '<div data-text>'+field('文字字數上限',input('maxLength',q.maxLength??1000,'number','min="1" max="4000"'))+'</div>'+
         '<div class="row-between"><label class="checkbox"><input name="required" type="checkbox" '+(q.required?'checked':'')+'>必填</label>'+btn('移除此題','quiet small','data-remove-question')+'</div>';
       area.append(element);
       const type=element.querySelector('[name="type"]'), update=()=>{
-        element.querySelector('[data-number]').hidden=type.value!=='integer';
-        element.querySelector('[data-options]').hidden=type.value!=='choice';
+        element.querySelector('[data-number]').hidden=!['integer','number'].includes(type.value);
+        element.querySelector('[data-options]').hidden=!['choice','multichoice'].includes(type.value);
+        element.querySelector('[data-text]').hidden=type.value!=='text';
       };
       type.onchange=update;update();
       bind(element,'[data-remove-question]',()=>element.remove());
     }
     for(const q of version?.form??[{}]) add(q);
     bind(box,'[data-add-question]',()=>add());
+    bind(box,'[data-standard-questions]',()=>{const form=box.querySelector('form'),template=config.assessmentTemplates[form.elements.stage.value];if(!template){message('此階段沒有新版標準題目。','error');return;}area.replaceChildren();template.forEach(add);});
     bindForms(box,'form',async data=>{
       const form=[...area.children].map(row=>{
         const read=name=>row.querySelector('[name="'+name+'"]').value;
         return {key:read('key'),label:read('label'),help:read('help'),type:read('type'),required:row.querySelector('[name="required"]').checked,
           min:Number(read('min')),max:Number(read('max')),unit:read('unit'),metricVersion:read('metricVersion'),
+          maxLength:Number(read('maxLength')),
           options:read('options').split('\n').map(v=>v.trim()).filter(Boolean)};
       });
       await api('/admin/survey-versions',{body:{program:data.get('program'),stage:data.get('stage'),form}});
@@ -304,7 +319,7 @@ export async function startAdmin(root,config) {
     const allowedEvents=events.filter(ev=>['published','completed'].includes(ev.status)&&ev.surveys.length);
     const box=modal('建立問卷派送','<form class="form-stack" id="job-preview">'+cols(
       field('活動場次',select('eventId',allowedEvents.map(ev=>o(ev.id,ev.title)).join(''),'required')),
-      field('問卷階段',select('surveyId','','required')))+field('對象',select('audience',o('nonmember','非佛光會員')+o('member','已核驗佛光會員')))+
+      field('問卷階段',select('surveyId','','required')))+field('對象',select('audience',o('nonmember','非佛光會員')+o('member','已核驗佛光會員')+o('cadre','指定幹部名單')))+
       '<div data-card-fields hidden>'+field('指定佛光卡號','<textarea name="cards" rows="4" placeholder="以逗號或換行分隔"></textarea>')+
       '<p class="note">每筆卡號第一碼為 B，後面接 14 碼數字。</p></div>'+
       '<div data-nonmember-fields>'+cols(field('居住縣市（選填）',select('residenceCityId',residenceCityOptions(config.residenceLocations,'',false))),
@@ -313,8 +328,13 @@ export async function startAdmin(root,config) {
       '<p class="note">系統會排除已填答、未同意追蹤與無法透過 LINE OA 觸達的人員。</p></div>'+errorSlot+submit('預覽派送名單')+'</form>',{wide:true});
     const form=box.querySelector('form');
     bindResidenceSelects(form,config.residenceLocations,'',false);
-    const updateStage=()=>{form.elements.surveyId.innerHTML=(allowedEvents.find(ev=>ev.id===form.elements.eventId.value)?.surveys??[]).map(s=>o(s.id,s.stage+' · '+stages[s.stage])).join('');};
-    const updateType=()=>{ const member=form.elements.audience.value==='member';box.querySelector('[data-card-fields]').hidden=!member;box.querySelector('[data-nonmember-fields]').hidden=member; };
+    const updateType=()=>{const stage=allowedEvents.find(ev=>ev.id===form.elements.eventId.value)?.surveys.find(s=>s.id===form.elements.surveyId.value)?.stage;
+      const cadre=stage==='STAFF';form.elements.audience.querySelector('[value=cadre]').disabled=!cadre;
+      for(const option of form.elements.audience.options) if(option.value!=='cadre')option.disabled=cadre;
+      if(cadre)form.elements.audience.value='cadre';else if(form.elements.audience.value==='cadre')form.elements.audience.value='nonmember';
+      box.querySelector('[data-card-fields]').hidden=form.elements.audience.value!=='member';box.querySelector('[data-nonmember-fields]').hidden=form.elements.audience.value!=='nonmember';};
+    const updateStage=()=>{form.elements.surveyId.innerHTML=(allowedEvents.find(ev=>ev.id===form.elements.eventId.value)?.surveys??[]).map(s=>o(s.id,s.stage+' · '+stages[s.stage])).join('');updateType();};
+    form.elements.surveyId.onchange=updateType;
     form.elements.eventId.onchange=updateStage;form.elements.audience.onchange=updateType;updateStage();updateType();
     bindForms(box,'form',async data=>{
       const ev=allowedEvents.find(ev=>ev.id===data.get('eventId'));
@@ -354,6 +374,19 @@ export async function startAdmin(root,config) {
     }catch(error){message(error.message,'error');}
   }
 
+  function assessmentSection(rows=[]) {
+    const ratio=value=>value===null?'樣本不足':nfmt(value*100)+'%';
+    return section('新版問卷評估', '<p class="note">依已驗證手機對應的穩定登入身分配對。全日蔬食以 0 天／1 天／2 至 3 天／4 天以上四級比較，不與舊版餐數混算。跨場次彙總為填答人次；選定單一場次即為人數。姓名及手機不列入統計匯出。</p>'+
+      table(['方案','基線／後測','知識有效配對／平均提升','回溯配對／平均提升','連結更緊密（4 分以上）','幹部回覆／總時數','幹部平均能力提升至少 1 分'],rows.map(r=>[
+        e(short[r.program]),r.baseline+' / '+r.post,r.knowledgePairs+' / '+nfmt(r.knowledgeGain),r.recalledPairs+' / '+nfmt(r.recalledGain),r.connected,
+        r.cadreCount+' / '+nfmt(r.cadreHours),r.cadreImproved
+      ]))+table(['方案／追蹤','回覆／基線有效配對','提升至少一級／配對人數','無謂比例','活動歸因比例','其他因素比例'],rows.flatMap(r=>r.follow.map(f=>[
+        e(short[r.program]+' · '+stages[f.stage]),f.responses+' / '+f.paired,f.improved+' / '+f.paired,ratio(f.deadweight),ratio(f.activityShare),ratio(f.otherAttribution)
+      ])))+'<p class="note">知識比較使用 1–5 分；無基線者的回溯前測另列，可信度較低。無謂選項換算為 100%／50%／0%；其他因素比例為 1 − 活動歸因比例。平均與比例沿用最小樣本保護。</p>'+
+      table(['方案','同人 3／6 月配對','行為持續比例衰退','幹部能力平均提升','幹部無謂／活動歸因'],rows.map(r=>[
+        e(short[r.program]),r.repeatPairs,ratio(r.dropOff),nfmt(r.cadreAverageGain),ratio(r.cadreDeadweight)+' / '+ratio(r.cadreActivityShare)
+      ]))+'<p class="note">衰退僅以同時完成基線及兩次追蹤的同一批人計算：max(0, 1 − 6 月提升人數／3 月提升人數)。沒有 3 月提升者或樣本不足時不估計。幹部能力採四項能力的平均分差。</p>');
+  }
   async function reports(target) {
     const data=await api('/admin/reports/outcomes?'+query(reportFilters));
     const link=can('analyst|publisher')?'<a class="button primary" href="/api/v1/admin/reports/export?'+e(query(reportFilters))+'">匯出 CSV '+icon('download',16)+'</a>':'';
@@ -367,16 +400,16 @@ export async function startAdmin(root,config) {
       cols(dateField('期間起點','since',reportFilters.since),dateField('資料截止','until',reportFilters.until),'<div class="filter-actions">'+submit('套用條件','secondary')+btn('清除','quiet','data-clear-filters')+'</div>')+errorSlot+'</form>';
     target.innerHTML=title('成效報表','依場次、活動方案與參與者分群重算成果。',link)+section('報表篩選',filterForm)+
       '<div class="kpi-grid">'+metricCard('場次後測回收率',percent(data.after),fraction(data.after),'doc')+
-      metricCard('T0–'+data.filters.stage+' 配對率',percent(data.paired),fraction(data.paired),'pulse','sage')+
+      metricCard('舊版核心指標配對率',percent(data.paired),fraction(data.paired),'pulse','sage')+
       metricCard('跨任務派送回收率',percent(data.recovery),fraction(data.recovery),'send','gold')+
-      metricCard('有效基線未配對',nfmt(data.lost,0),'缺值或指標版本不可比','people','sage')+'</div>'+
+      metricCard('舊版有效基線未配對',nfmt(data.lost,0),'缺值或指標版本不可比','people','sage')+'</div>'+
       section('場次回收與配對',eventResultTable(data.eventRows)+
       '<p class="note inline-note">資料截止 '+fdate(data.cutoff,'Asia/Taipei',true)+' · 計算版本 '+e(data.calculationVersion)+' · '+e(data.kind)+'</p>')+
-      section('行為變化與流失',table(['方案','有效配對','平均變化','中位數','上升／持平／下降','配對／未配對基線均值'],data.outcomes.map(r=>[
+      section('既有指標：行為變化與流失',table(['方案','有效配對','平均變化','中位數','上升／持平／下降','配對／未配對基線均值'],data.outcomes.map(r=>[
         e(short[r.code]),r.sample,r.mean===null?'樣本不足':nfmt(r.mean)+' '+e(r.unit),nfmt(r.median),r.directions?.join(' / ')??'—',
         nfmt(r.pairedBaseline)+' / '+nfmt(r.lostBaseline)]))+
       '<p class="note inline-note">追蹤回覆 '+data.followResponses+' 份 · 缺值或缺測 '+data.missing+' · 版本不可比 '+data.incomparable+
-      ' · VEGRUN 21 餐維持率 '+e(percent(data.maintenance))+'（'+e(fraction(data.maintenance))+'）</p>');
+      ' · 舊版 VEGRUN 21 餐維持率 '+e(percent(data.maintenance))+'（'+e(fraction(data.maintenance))+'）</p>')+assessmentSection(data.assessment);
     const distribution=data.outcomes.filter(r=>r.distribution);
     if (distribution.length) target.insertAdjacentHTML('beforeend',section('配對差值分布','<div class="distribution-grid">'+distribution.map(r=>
       '<div><h3>'+e(short[r.code])+'</h3>'+table(['個人差值（'+r.unit+'）','人數'],Object.entries(r.distribution).map(([d,count])=>[e(d),count]))+'</div>').join('')+'</div>'));
@@ -411,7 +444,7 @@ export async function startAdmin(root,config) {
       const r=snapshotResult.items.find(row=>row.id===el.dataset.snapshot);
       const box=modal('成效快照','<div class="form-stack"><div class="row-between"><strong>'+e(r.title)+'</strong>'+stateTitle(r.status)+'</div><p>'+e(r.reason)+'</p>'+
         '<p class="note">資料截止 '+fdate(r.report.cutoff,'Asia/Taipei',true)+' · 計算版本 '+e(r.report.calculationVersion)+'</p>'+
-        eventResultTable(r.report.eventRows)+'<p>引用證據 '+r.evidenceIds.length+' 份</p>'+
+        eventResultTable(r.report.eventRows)+assessmentSection(r.report.assessment)+'<p>引用證據 '+r.evidenceIds.length+' 份</p>'+
         (can('publisher')&&r.status==='pending'?rowActions(btn('核准發布','primary','data-review-snapshot="yes"'),btn('退回','secondary','data-review-snapshot="no"')):'')+'</div>',{wide:true});
       bind(box,'[data-review-snapshot]',b=>reasonAction(b.textContent,r.title,reason=>api('/admin/metric-snapshots/'+r.id+'/review',{body:{approve:b.dataset.reviewSnapshot==='yes',reason}})));
     });
@@ -524,25 +557,18 @@ export async function startAdmin(root,config) {
       try{
         const r=await api('/admin/response-reviews/'+el.dataset.correction);
         const box=modal('回覆更正差異','<div class="form-stack"><p>'+e(r.reason)+'</p>'+table(['題目代碼','更正前','更正後'],
-          Object.keys(r.after).filter(key=>r.before[key]!==r.after[key]).map(key=>[e(key),e(r.before[key]??'缺值'),e(r.after[key]??'缺值')]))+
+          Object.keys(r.after).filter(key=>JSON.stringify(r.before[key])!==JSON.stringify(r.after[key])).map(key=>[e(key),e(r.before[key]??'缺值'),e(r.after[key]??'缺值')]))+
           (can('publisher')&&r.status==='pending'?rowActions(btn('核准更正','primary','data-correction-review="yes"'),btn('退回','secondary','data-correction-review="no"')):'')+'</div>');
         bind(box,'[data-correction-review]',b=>reasonAction(b.textContent,'複核原始答案與更正值。',reason=>api('/admin/response-reviews/'+r.id,{body:{approve:b.dataset.correctionReview==='yes',reason}})));
       }catch(error){message(error.message,'error');}
     });
   }
   function correctionEditor(r) {
-    const fields=r.form.map(q=>{
-      const answer=r.answers[q.key];
-      return field(q.label,q.type==='integer'?input('q-'+q.key,answer??'','number','min="'+q.min+'" max="'+q.max+'" step="1" '+(q.required?'required':'')):
-        select('q-'+q.key,o('','未回答')+q.options.map(v=>o(v,v,answer)).join(''),q.required?'required':''));
-    }).join('');
+    const fields=questionFields(r.form,r.answers,false,'q-');
     const box=modal('提出回覆更正','<form class="form-stack"><p class="note">'+e(r.title)+' · '+e(stages[r.stage])+'</p>'+fields+
       field('更正理由','<textarea name="reason" rows="3" required maxlength="500"></textarea>')+errorSlot+submit('送交複核')+'</form>');
     bindForms(box,'form',async values=>{
-      const answers=Object.fromEntries(r.form.map(q=>{
-        const value=values.get('q-'+q.key);
-        return [q.key,value===''?null:q.type==='integer'?Number(value):value];
-      }));
+      const answers=questionAnswers(r.form,values,'q-');
       await api('/admin/responses/'+r.id+'/corrections',{body:{answers,reason:values.get('reason')}});
       close();delete pageState.corrections;await render();message('更正已送交複核。');
     });

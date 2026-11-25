@@ -104,6 +104,25 @@ export const btn=(label,classes='primary',attrs='',symbol='')=>'<button class="b
 export const submit=(label,classes='primary')=>'<button type="submit" class="button '+classes+'">'+e(label)+icon('arrow',16)+'</button>';
 export const field=(label,content,help='')=>'<label class="field"><span>'+e(label)+'</span>'+content+(help?'<small>'+e(help)+'</small>':'')+'</label>';
 export const input=(name,value='',type='text',attr='')=>'<input type="'+type+'" name="'+e(name)+'" value="'+e(value)+'" '+attr+'>';
+export function questionField(q,answer,done=false,prefix='') {
+  const name=prefix+q.key, required=q.required?'required':'';
+  if(q.type==='multichoice') return '<fieldset class="question-block"><legend>'+e(q.label)+(q.required?'（必填）':'')+'</legend>'+q.options.map(value=>
+    '<label class="checkbox"><input type="checkbox" name="'+e(name)+'" value="'+e(value)+'" '+(answer?.includes(value)?'checked ':'')+(done?'disabled':'')+'>'+e(value)+'</label>').join('')+(q.help?'<p class="note">'+e(q.help)+'</p>':'')+'</fieldset>';
+  return field(q.label,['integer','number'].includes(q.type)?input(name,answer??'','number','min="'+e(q.min)+'" max="'+e(q.max)+'" step="'+(q.type==='integer'?'1':'any')+'" '+(done?'readonly':required)):
+    q.type==='text'?'<textarea name="'+e(name)+'" rows="3" maxlength="'+(q.maxLength??1000)+'" '+(done?'readonly':required)+'>'+e(answer??'')+'</textarea>':
+    select(name,o('','請選擇')+q.options.map(value=>o(value,value,answer)).join(''),done?'disabled':required),q.help||(['integer','number'].includes(q.type)?'請填寫 '+q.min+' 至 '+q.max+' '+(q.unit||'分')+'。':''));
+}
+export function questionAnswers(schema,data,prefix='') {
+  return Object.fromEntries(schema.map(q=>{
+    const value=data.get(prefix+q.key);
+    return [q.key,q.type==='multichoice'?data.getAll(prefix+q.key):value===null||value===''?null:['integer','number'].includes(q.type)?Number(value):value];
+  }));
+}
+export function questionFields(schema,answers={},done=false,prefix='') {
+  const skills=schema.filter(q=>/^(planning|leadership|communication|response)_(before|after)$/.test(q.key));
+  return schema.map(q=>skills.includes(q)?q===skills[0]?'<fieldset class="question-block"><legend>以下四項能力，參加前和參加後各幾分？（每項 1 至 5 分）</legend><div class="form-grid">'+skills.map(item=>questionField(item,answers[item.key],done,prefix)).join('')+'</div></fieldset>':'':questionField(q,answers[q.key],done,prefix)).join('');
+}
+export const collectionTimeline=rows=>'<details class="card collection-timeline"><summary>資料收集時間軸</summary><ol>'+rows.map(row=>'<li><strong>'+e(row.title)+'</strong><span>'+e(row.time)+'</span><p>'+e(row.detail)+'</p></li>').join('')+'</ol><p class="note">問卷以已驗證手機對應的登入身分串接；變更手機後仍保留同一人的歷程。</p></details>';
 export const select=(name,options,attr='')=>'<select name="'+e(name)+'" '+attr+'>'+options+'</select>';
 export const zoneDate=v=>v?new Date(v).toISOString():undefined;
 export const query=(args)=>new URLSearchParams(Object.fromEntries(Object.entries(args).filter(([,v])=>v))).toString();

@@ -1,5 +1,13 @@
 # SIA REST API
 
+## 新版評估問卷
+
+- `GET /config` 提供 `assessmentTemplates`（T0、T1B、T2、T3、STAFF）與 `collectionTimeline`，三個方案共用題目。T2 與 T3 的題目與選項完全相同。
+- 題型為 `integer`、`number`、`choice`、`multichoice`、`text`。複選答案為不重複的選項陣列，數值須在上下限內，文字遵守 `maxLength`；未知欄位（包括另填姓名、手機或 Email）會拒絕。
+- `GET /me/surveys` 對已提交答卷回傳其歷史 `versionId` 與 `form`；未填答者取得目前綁定的新版。基線提交的 `tracking_consent` 會同步目前方案追蹤同意。身分使用驗證手機所連結的 participant ID，使用者不能指定他人的 participant ID。
+- STAFF 僅供場次 `event_cadres` 名單的啟用對象，不依賴跑者報名或簽到。停用後拒絕新提交，既有答卷可繼續檢視。派送預覽使用 `{surveyId,audience:"cadre"}` 並重新檢查名單、告知及觸達資格。
+- 報表 `assessment` 為各方案的新指標彙總，與舊餐數指標分開；包含基線、後測、兩次追蹤、回溯前測、幹部時數與能力、無謂、活動／其他因素歸因、同人衰退。CSV 與成果快照同樣保存此統計。平均與比例遵守最小樣本門檻。
+
 ## 居住縣市與地區
 
 - `GET /api/v1/config` 的 `residenceLocations` 提供縣市 `cities` 與地區 `districts`，含 `id`、`name`、`sort_order`、`active`，地區另有 `city_id`。前台僅提供啟用選項，既有停用選取保留顯示。
@@ -45,6 +53,9 @@
 | --- | --- |
 | POST /auth/admin/login、GET /admin/me | 後台登入、角色與組織 |
 | POST /auth/admin/logout | 後台登出 |
+| POST /admin/events/{id}/assessment-setup | 活動營運／系統管理員在草稿場次套用 T0、T1B、T2、T3、STAFF 標準版本與排程 |
+| GET/POST /admin/events/{id}/cadres | 限場次授權範圍；GET 回傳幹部姓名與手機遮罩；POST `{phones}` 以換行／逗號分隔已驗證手機，整批驗證後加入，不需跑者報名 |
+| PATCH /admin/events/{id}/cadres/{participantId} | `{active:boolean}` 停用／啟用幹部填答資格，保留歷史答卷與稽核 |
 | GET /admin/staff | 系統管理員查詢帳號、角色與組織範圍，回傳 `{items,roles}` |
 | POST /admin/staff、PATCH /admin/staff/{id} | 系統管理員建立或維護帳號，寫入 `{id,label,role,orgId,active,reason}`；PATCH 不變更 id。admin 須為全平台，至少保留一位啟用 admin；授權異動撤銷該帳號登入並留下稽核紀錄 |
 | GET/POST /admin/events、PATCH /admin/events/{id} | 查詢、建立或更新草稿。寫入用 `{program,title,region,venue,orgId,startsAt,endsAt,registrationOpens,registrationCloses,timezone,anchorType}` |
