@@ -306,7 +306,7 @@ export async function startAdmin(root,config) {
       field('活動場次',select('eventId',allowedEvents.map(ev=>o(ev.id,ev.title)).join(''),'required')),
       field('問卷階段',select('surveyId','','required')))+field('對象',select('audience',o('nonmember','非佛光會員')+o('member','已核驗佛光會員')))+
       '<div data-card-fields hidden>'+field('指定佛光卡號','<textarea name="cards" rows="4" placeholder="以逗號或換行分隔"></textarea>')+
-      (config.demo?'<p class="note">測試卡號可用 DEMO0002、DEMO0003、DEMO9999。請選 VEGRUN 北區場 T2。</p>':'')+'</div>'+
+      '<p class="note">每筆卡號第一碼為 B，後面接 14 碼數字。</p></div>'+
       '<div data-nonmember-fields>'+cols(field('居住縣市（選填）',select('residenceCityId',residenceCityOptions(config.residenceLocations,'',false))),
         field('居住地區（選填）',select('residenceDistrictId',o('','請先選擇居住縣市'))))+
         field('參與狀態',select('status',o('','所有符合資格者')+o('attended','已簽到')+o('registered','已報名')))+

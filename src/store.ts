@@ -158,7 +158,7 @@ async function seedDemo() {
     const phone='+886900000'+String(n).padStart(3,'0');
     await bind(person,'phone','e164',phone,phoneMask(phone));
     await bind(person,'line','demo',String(n),'LINE 示範帳號');
-    const card='DEMO'+String(n).padStart(4,'0');
+    const card='B'+String(n).padStart(14,'0');
     await run('UPDATE profiles SET name=?,region=?,district_id=?,chapter_id=?,member_status=?,card_lookup=?,card_encrypted=?,card_mask=?,line_reachable=1 WHERE participant_id=?',
       '示範參與者 '+String(n).padStart(2,'0'),n%2?'臺北市':'宜蘭縣','north6','prajna',n===2?'verified':n===3?'pending':'nonmember',
       n===2||n===3?lookup(card):null,n===2||n===3?seal(card):null,n===2||n===3?'••••'+card.slice(-4):null,person);

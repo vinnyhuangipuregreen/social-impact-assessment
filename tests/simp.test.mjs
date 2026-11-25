@@ -102,7 +102,7 @@ test('UAT-02: cross-account LINE attach creates a review case and retains both a
 });
 
 test('UAT-04 and UAT-05: list by verified card and filter non-members with AND rules',async()=>{
-  const member=await call('/admin/dispatch-jobs/preview',{jar:staff,body:{surveyId:'vegrun-follow-T2',audience:'member',cards:'DEMO0002,DEMO0003,DEMO9999,DEMO0002'}});
+  const member=await call('/admin/dispatch-jobs/preview',{jar:staff,body:{surveyId:'vegrun-follow-T2',audience:'member',cards:[2,3,9999,2].map(n=>'B'+String(n).padStart(14,'0')).join(',')}});
   assert.equal(member.count,1);
   assert.deepEqual(member.excluded,{'待審或未核驗':1,'未找到':1,'重複':1});
   const audience=await call('/admin/dispatch-jobs/preview',{jar:staff,body:{surveyId:'earth-follow-T2',audience:'nonmember',regions:['宜蘭縣'],statuses:['attended']}});
@@ -111,7 +111,7 @@ test('UAT-04 and UAT-05: list by verified card and filter non-members with AND r
 });
 
 test('UAT-06 and UAT-09: persisted send-time checks and reminder denominator',async()=>{
-  const member=await call('/admin/dispatch-jobs/preview',{jar:staff,body:{surveyId:'vegrun-follow-T2',audience:'member',cards:'DEMO0002'}});
+  const member=await call('/admin/dispatch-jobs/preview',{jar:staff,body:{surveyId:'vegrun-follow-T2',audience:'member',cards:'B'+String(2).padStart(14,'0')}});
   const due=new Date(Date.now()+1200).toISOString();
   const job=await call('/admin/dispatch-jobs',{jar:staff,body:{previewId:member.id,dueAt:due}});
   const repeated=await call('/admin/dispatch-jobs',{jar:staff,body:{previewId:member.id,dueAt:due}});

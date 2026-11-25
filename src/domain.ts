@@ -41,8 +41,8 @@ export function normalizePhone(value: unknown) {
   return phone;
 }
 export function normalizeCard(value: unknown) {
-  const card=String(value ?? '').normalize('NFKC').toUpperCase().replace(/[\s-]/g,'');
-  demand(/^[A-Z0-9]{4,24}$/.test(card),422,'CARD_INVALID','卡號請輸入 4 至 24 位英數字。');
+  const card=String(value ?? '').trim();
+  demand(/^B[0-9]{14}$/.test(card),422,'CARD_INVALID','佛光卡號第一碼為 B，後面接 14 碼數字。');
   return card;
 }
 export function date(value: unknown) {

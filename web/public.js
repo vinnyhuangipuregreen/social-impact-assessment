@@ -94,7 +94,7 @@ export async function startPublic(root,config) {
       field('參與身分',select('member',o('no','非佛光會員',isMember?'yes':'no')+o('yes','佛光會員',isMember?'yes':'no')))+
       '<div id="member-fields" '+(!isMember?'hidden':'')+'><div class="form-grid">'+field('督導區',select('district',o('','請選擇')+district.map(x=>o(x.id,x.name,me.district_id)).join('')))+
       field('分會',select('chapter',o('','請選擇')))+
-      '</div>'+field('佛光卡號',input('card','','text','maxlength="30" placeholder="'+e(me.card_mask??'輸入您的佛光卡號')+'"'),me.card_mask?'更換卡號請重新輸入。':'核驗通過後可依卡號接收通知。')+
+      '</div>'+field('佛光卡號',input('card','','text','minlength="15" maxlength="15" pattern="B[0-9]{14}" title="第一碼為 B，後面接 14 碼數字" autocapitalize="characters" spellcheck="false" placeholder="'+e(me.card_mask??'輸入您的佛光卡號')+'"'),'第一碼為 B，後面接 14 碼數字。'+(me.card_mask?'更換卡號請重新輸入。':'核驗通過後可依卡號接收通知。'))+
       (me.review_reason?'<p class="note">'+e(me.review_reason)+'</p>':'')+'</div>'+errorSlot+submit('儲存基本資料')+'</form></section>'+
       '<section class="card panel"><h2>帳號與照片</h2><div class="photo-row">'+(me.photo_id?'<img class="avatar" src="/api/v1/me/files/'+e(me.photo_id)+'" alt="個人照片">':'<span class="avatar">'+icon('user',26)+'</span>')+
       '<div><strong>'+e(me.name||'參與者')+'</strong><p>'+e(me.identities.find(i=>i.kind==='phone')?.mask??'未連結手機')+'</p></div></div>'+
@@ -146,6 +146,8 @@ export async function startPublic(root,config) {
       root.querySelector('#member-fields').hidden=member.value!=='yes';
       district.required=member.value==='yes';
       chapter.required=member.value==='yes';
+      form.elements.card.disabled=member.value!=='yes';
+      form.elements.card.required=member.value==='yes'&&!me.card_mask;
     }
     loadBranches(me.chapter_id??'');
     district.onchange=()=>loadBranches();
