@@ -5,10 +5,6 @@ export async function startAdmin(root,config) {
   const short={VGR:'公益路跑',EARTH:'森林覺醒',VEG:'蔬食指南'};
   const P=code=>programMap.get(code)?.title??code;
   const stages=config.stages;
-  const staffOptions={
-    operator:'活動營運', 'north6-ops':'北市北第六區承辦', 'north3-ops':'北市北第三區承辦',
-    reviewer:'身分審核', reviewer2:'身分複核', 'north3-analyst':'北市北第三區分析', analyst:'成果分析',publisher:'審校發布',admin:'系統管理員'
-  };
   const pages=[
     ['dashboard','總覽儀表板','grid','operator|analyst|publisher'],
     ['events','活動與簽到','calendar','operator'],
@@ -19,6 +15,7 @@ export async function startAdmin(root,config) {
     ['corrections','回覆更正','doc','analyst|publisher'],
     ['members','會員與權利請求','people','identity'],
     ['locations','縣市地區維護','pin','admin'],
+    ['access','權限管理','shield','admin'],
     ['audit','稽核紀錄','shield','admin']
   ];
   let me=await api('/admin/me').catch(error=>{if(error.status===401)return null;throw error;});
@@ -26,7 +23,7 @@ export async function startAdmin(root,config) {
   let reportFilters={};
   const pageState={};
   const facets=()=>config.organizations.filter(org=>org.kind==='district').map(x=>o(x.id,x.name,reportFilters.district)).join('');
-  const can=roles=>roles.split('|').includes(me?.role);
+  const can=roles=>me?.role==='admin'||roles.split('|').includes(me?.role);
   const pOptions=(selected)=>config.programs.map(p=>o(p.code,p.title,selected)).join('');
   const eventOptions=(selected)=>events.map(ev=>o(ev.id,ev.title,selected)).join('');
   const stageOptions=(selected,list=Object.keys(stages))=>list.map(stage=>o(stage,stage+' · '+stages[stage],selected)).join('');
@@ -77,16 +74,19 @@ export async function startAdmin(root,config) {
     const enabled=pages.filter(page=>can(page[3]));
     return enabled.find(page=>page[0]===location.hash.slice(1))?.[0]??enabled[0]?.[0];
   }
-  function login() {
+  async function login() {
+    const accounts=config.demo?await items('/auth/admin/accounts'):[];
     root.innerHTML='<main id="main" class="admin-login"><div class="admin-login-cover"><a href="/" class="brand-link">'+brand(true)+'</a><div><p class="eyebrow">綠色公益基金會</p><h1>記錄行動，<br>衡量影響。</h1></div><a href="/" class="button on-dark">'+icon('arrow',16)+'返回活動前台</a></div>'+
       '<div class="admin-login-main"><section class="card panel login-panel"><h2>管理後台登入</h2><p>使用授權帳號管理活動、問卷與成效資料。</p><form class="form-stack">'+
-      (config.demo?field('示範角色',select('account',Object.entries(staffOptions).map(([key,label])=>o(key,label,'operator')).join('')))+'<p class="note">Demo 帳號採用合成資料，選擇角色即可體驗不同權限。</p>':
+      (config.demo?field('示範角色',select('account',accounts.map(row=>o(row.id,row.label,'operator')).join('')))+'<p class="note">Demo 帳號採用合成資料，選擇角色即可體驗不同權限。</p>':
         field('帳號',input('account','','text','required autocomplete="username"'))+field('密碼',input('password','','password','required autocomplete="current-password"'))+field('多因子驗證碼',input('mfa','','text','required autocomplete="one-time-code"')))+errorSlot+submit('登入後台')+'</form></section></div></main>';
     bindForms(root,'form',async data=>{me=await api('/auth/admin/login',{body:Object.fromEntries(data)});await render();message('已登入管理後台。');});
   }
   async function render() {
     const serial=++routeCounter;
-    if (!me) {login();return;}
+    if (me) me=await api('/admin/me').catch(error=>{if(error.status===401)return null;throw error;});
+    if(serial!==routeCounter) return;
+    if (!me) {await login();return;}
     const route=selectedRoute();
     const links=pages.filter(page=>can(page[3]));
     if (!root.classList.contains('admin-root')) root.classList.add('admin-root');
@@ -103,7 +103,7 @@ export async function startAdmin(root,config) {
     try {
       if (can('operator|analyst|publisher')) events=await items('/admin/events');
       if(serial!==routeCounter) return;
-      await ({dashboard,events:eventPage,versions:versionPage,dispatch,reports,evidence:library,corrections,members,locations:locationPage,audit:auditPage}[route])(target);
+      await ({dashboard,events:eventPage,versions:versionPage,dispatch,reports,evidence:library,corrections,members,locations:locationPage,access:accessPage,audit:auditPage}[route])(target);
       bindPagination(target);
     }catch(error) {
       if(serial===routeCounter) target.innerHTML=empty('無法載入資料',error.message);
@@ -589,6 +589,43 @@ export async function startAdmin(root,config) {
     bind(target,'[data-new-district]',()=>editor('districts'));
     bind(target,'[data-edit-city]',el=>editor('cities',locations.cities.find(c=>c.id===el.dataset.editCity)));
     bind(target,'[data-edit-district]',el=>editor('districts',districts.find(d=>d.id===el.dataset.editDistrict)));
+  }
+
+  async function accessPage(target) {
+    const data=await api('/admin/staff');
+    const roles=new Map(data.roles.map(role=>[role.id,role.name]));
+    target.innerHTML=title('權限管理','管理後台帳號、角色及組織範圍。系統管理員可使用全部後台功能。',btn('新增帳號','primary','data-new-staff','add'))+
+      section('後台帳號',table(['帳號識別碼','顯示名稱','角色','管理範圍','狀態','操作'],data.items.map(row=>[
+        '<code>'+e(row.id)+'</code>',e(row.label),e(roles.get(row.role)),e(row.org_name??'全平台'),
+        pill(row.active?'open':'closed',row.active?'啟用':'停用'),btn('編輯權限','secondary small','data-edit-staff="'+e(row.id)+'"')
+      ])))+
+      section('角色功能範圍','<p class="note">角色決定可使用的功能；管理範圍限制可存取的組織資料。審核仍須遵守不同人員複核規則。</p>'+
+        table(['後台功能',...data.roles.map(role=>role.name)],pages.map(page=>[
+          e(page[1]),...data.roles.map(role=>role.id==='admin'||page[3].split('|').includes(role.id)?'✓':'—')
+        ])));
+    function editor(row) {
+      const box=modal(row?'編輯帳號權限':'新增後台帳號','<form class="form-stack">'+
+        field('帳號識別碼',input('id',row?.id??'','text','required maxlength="100" '+(row?'readonly':'autocomplete="off"')))+
+        (!row?'<p class="note">請使用登入驗證服務對應的帳號識別碼；Demo 模式可直接使用此帳號登入。</p>':'')+
+        field('顯示名稱',input('label',row?.label??'','text','required maxlength="80"'))+
+        field('角色',select('role',data.roles.map(role=>o(role.id,role.name,row?.role??'operator')).join('')))+
+        field('管理範圍',select('orgId',o('','全平台',row?.org_id??'')+config.organizations.map(org=>o(org.id,org.name,row?.org_id)).join('')))+
+        '<label class="checkbox"><input type="checkbox" name="active" '+(!row||row.active?'checked':'')+'>啟用帳號</label>'+
+        field('異動理由','<textarea name="reason" rows="3" required maxlength="500"></textarea>')+
+        '<p class="note">角色、範圍或狀態變更後，該帳號須重新登入。至少保留一位啟用的系統管理員。</p>'+errorSlot+submit('儲存權限')+'</form>');
+      const role=box.querySelector('[name=role]'),org=box.querySelector('[name=orgId]');
+      const scope=()=>{org.disabled=role.value==='admin';if(org.disabled)org.value='';};
+      role.onchange=scope;scope();
+      bindForms(box,'form',async values=>{
+        await api('/admin/staff'+(row?'/'+encodeURIComponent(row.id):''),{method:row?'PATCH':'POST',body:{
+          id:values.get('id'),label:values.get('label'),role:values.get('role'),orgId:values.get('orgId')??'',
+          active:values.get('active')==='on',reason:values.get('reason')
+        }});
+        close();await render();message('帳號權限已儲存。');
+      });
+    }
+    bind(target,'[data-new-staff]',()=>editor());
+    bind(target,'[data-edit-staff]',el=>editor(data.items.find(row=>row.id===el.dataset.editStaff)));
   }
 
   let auditSearch='';

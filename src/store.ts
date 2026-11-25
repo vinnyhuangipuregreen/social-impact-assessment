@@ -130,9 +130,9 @@ async function seedDemo() {
     ['operator','活動營運','operator',null], ['north6-ops','北市北第六區承辦','operator','north6'],
     ['north3-ops','北市北第三區承辦','operator','north3'], ['reviewer','身分審核','identity',null],
     ['reviewer2','身分複核','identity',null], ['north3-analyst','北市北第三區分析','analyst','north3'],
-    ['analyst','影響力分析','analyst',null], ['publisher','審校發布','publisher',null], ['admin','系統管理','admin',null]
+    ['analyst','影響力分析','analyst',null], ['publisher','審校發布','publisher',null], ['admin','系統管理員','admin',null]
   ];
-  for (const row of staff) await run('INSERT INTO staff VALUES (?,?,?,?)',...row);
+  for (const row of staff) await run('INSERT INTO staff(id,label,role,org_id) VALUES (?,?,?,?)',...row);
   const sampleEvents = [
     ['vegrun','VGR','VEGRUN 台北場｜成美左岸','臺北市','成美左岸河濱公園','prajna',7,'published'],
     ['earth','EARTH','森林覺醒｜步雲逵踏查','宜蘭縣','佛光大學步雲逵步道','bright',12,'published'],

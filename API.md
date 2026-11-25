@@ -45,6 +45,8 @@
 | --- | --- |
 | POST /auth/admin/login、GET /admin/me | 後台登入、角色與組織 |
 | POST /auth/admin/logout | 後台登出 |
+| GET /admin/staff | 系統管理員查詢帳號、角色與組織範圍，回傳 `{items,roles}` |
+| POST /admin/staff、PATCH /admin/staff/{id} | 系統管理員建立或維護帳號，寫入 `{id,label,role,orgId,active,reason}`；PATCH 不變更 id。admin 須為全平台，至少保留一位啟用 admin；授權異動撤銷該帳號登入並留下稽核紀錄 |
 | GET/POST /admin/events、PATCH /admin/events/{id} | 查詢、建立或更新草稿。寫入用 `{program,title,region,venue,orgId,startsAt,endsAt,registrationOpens,registrationCloses,timezone,anchorType}` |
 | POST /admin/events/{id}/status | `{status}`，執行狀態轉換 |
 | POST /admin/events/{id}/surveys | `{stage,versionId,opensAt,closesAt}`，選填時間可採預設 |

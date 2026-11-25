@@ -66,7 +66,7 @@ test('residence migration maps legacy city names without inventing districts or 
       const db=new DatabaseSync(process.env.SIMP_DB);
       db.exec('CREATE TABLE migrations (name TEXT PRIMARY KEY)');
       const directory=new URL(${JSON.stringify(migrationUrl)});
-      for(const file of readdirSync(directory).filter(name=>name.endsWith('.sql')&&!name.startsWith('006')).sort()) {
+      for(const file of readdirSync(directory).filter(name=>name.endsWith('.sql')&&name<'006').sort()) {
         db.exec(readFileSync(new URL(file,directory),'utf8'));
         db.prepare('INSERT INTO migrations VALUES (?)').run(file);
       }

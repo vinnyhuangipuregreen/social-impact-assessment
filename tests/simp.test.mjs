@@ -186,6 +186,57 @@ test('UAT-13 and UAT-16: immutable version assignment and independent snapshot a
   assert.ok(saved.report.cutoff);
 });
 
+test('system administrator has every module and retains independent review',async()=>{
+  const root=await login('admin');
+  for(const path of ['/admin/events','/admin/survey-versions','/admin/dispatch-jobs','/admin/reports/recovery?eventId=vegrun-follow',
+    '/admin/reports/outcomes?eventId=vegrun-follow','/admin/evidence','/admin/metric-snapshots','/admin/response-reviews',
+    '/admin/members','/admin/identity-cases','/admin/rights','/admin/residence-locations','/admin/staff','/admin/audit']) {
+    await call(path,{jar:root});
+  }
+  const evidence=(await call('/admin/evidence?eventId=vegrun-follow',{jar:root})).items.find(item=>item.status==='approved');
+  const snap=await call('/admin/metric-snapshots',{jar:root,body:{eventId:'vegrun-follow',reason:'管理員驗收快照',stage:'T2',evidenceIds:[evidence.id]}});
+  const own=await call('/admin/metric-snapshots/'+snap.id+'/review',{jar:root,body:{approve:true,reason:'不得自行複核'},expect:409});
+  assert.equal(own.error.code,'SECOND_REVIEW');
+  const analyst=await login('analyst');
+  const other=await call('/admin/metric-snapshots',{jar:analyst,body:{eventId:'vegrun-follow',reason:'交由管理員複核',stage:'T2',evidenceIds:[evidence.id]}});
+  await call('/admin/metric-snapshots/'+other.id+'/review',{jar:root,body:{approve:true,reason:'核對完畢'}});
+  const created=await call('/admin/evidence',{jar:root,body:{eventId:'vegrun-follow',title:'管理員證據',source:'驗收',version:'1',recordedAt:new Date().toISOString()}});
+  await call('/admin/evidence/'+created.id+'/review',{jar:root,body:{approve:true,reason:'不得自行審查'},expect:409});
+});
+
+test('staff access management enforces scope, immediate revocation, audit and a remaining administrator',async()=>{
+  const root=await login('admin');
+  await call('/admin/staff',{jar:staff,expect:403});
+  const input={id:'access-test',label:'權限驗收',role:'operator',orgId:'north3',active:true,reason:'驗證組織權限'};
+  await call('/admin/staff',{jar:staff,body:input,expect:403});
+  await call('/admin/staff',{jar:root,body:{...input,role:'unknown'},expect:422});
+  await call('/admin/staff',{jar:root,body:{...input,orgId:'unknown'},expect:422});
+  await call('/admin/staff',{jar:root,body:{...input,role:'admin'},expect:422});
+  await call('/admin/staff',{jar:root,body:input});
+  await call('/admin/staff',{jar:root,body:input,expect:409});
+  const account=await login(input.id);
+  const scoped=(await call('/admin/events',{jar:account})).items;
+  assert.ok(scoped.length>0);
+  assert.ok(scoped.every(row=>['north3','bright'].includes(row.org_id)));
+  await call('/admin/staff',{jar:account,expect:403});
+  await call('/admin/metric-snapshots',{jar:account,expect:403});
+  await call('/admin/staff/'+input.id,{jar:root,method:'PATCH',body:{...input,role:'analyst',orgId:'',reason:'改為全平台分析'}});
+  await call('/admin/me',{jar:account,expect:401});
+  await login(input.id,account);
+  assert.equal((await call('/admin/me',{jar:account})).role,'analyst');
+  await call('/admin/metric-snapshots',{jar:account});
+  await call('/admin/staff/'+input.id,{jar:root,method:'PATCH',body:{...input,active:false,reason:'停用驗收帳號'}});
+  await call('/admin/me',{jar:account,expect:401});
+  await call('/auth/admin/login',{jar:account,body:{account:input.id},expect:401});
+  assert.ok(!(await call('/auth/admin/accounts')).items.some(row=>row.id===input.id));
+  const audit=await call('/admin/audit?q=access.update',{jar:root});
+  assert.ok(audit.items.some(row=>row.target===input.id));
+  const last=await call('/admin/staff/admin',{jar:root,method:'PATCH',body:{label:'系統管理員',role:'admin',orgId:'',active:false,reason:'最後管理員保護測試'},expect:409});
+  assert.equal(last.error.code,'LAST_ADMIN');
+  await call('/admin/staff/admin',{jar:root,method:'PATCH',body:{label:'系統管理員',role:'operator',orgId:'',active:true,reason:'最後管理員降級保護測試'},expect:409});
+  assert.equal((await call('/admin/me',{jar:root})).role,'admin');
+});
+
 test('Draft event lifecycle and repeated attendance imports',async()=>{
   const time=hours=>new Date(Date.now()+hours*3600000).toISOString();
   const created=await call('/admin/events',{jar:staff,body:{program:'VGR',title:'驗收場次',region:'臺北市',venue:'測試公園',orgId:'prajna',timezone:'Asia/Taipei',

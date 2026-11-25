@@ -63,7 +63,7 @@
 .dashboard-banner h2 { font-size: clamp(27px,3vw,36px); }
 .dashboard-banner>div { max-width: 50%; }
 .dashboard-banner>.button { align-self: end; }
-.admin-sidebar { box-shadow: 3px 0 20px #254e4405; }
+.admin-sidebar { box-shadow: 3px 0 20px #254e4405; overflow-y: auto; }
 .admin-card { border-color: #dfe9ed; }
 .card-head { background: linear-gradient(90deg,#fff,#f9fcfb); }
 .kpi { border-color: #dfe9ed; background: #fff; }

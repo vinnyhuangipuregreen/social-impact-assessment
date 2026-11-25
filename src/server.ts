@@ -9,11 +9,12 @@ import { DAY, FOLLOW, NOTICE, NOTICE_TEXT, PROGRAMS, STAGES, Problem, date, dema
 import { all, audit, bind, consent, createParticipant, demo, digest, eligibility, enrollment, getEvent, getSurvey, id, lookup, one, open, phoneMask, run, seal, token, tx, windowFor } from './store.ts';
 import { audience, cancelJob, enqueue, inOrg, jobStats, processQueue, provider, recordConsent, report, scope, tlsOrigin } from './operations.ts';
 import { residenceLocations, resolveResidence, saveResidenceLocation } from './residence.ts';
+import { STAFF_ROLES, staffAccessList, saveStaffAccess } from './staff-access.ts';
 
 const requestContext = new AsyncLocalStorage<string>();
 const PARTICIPANT='simp_person', STAFF='simp_staff', LINE='simp_line', LINE_STATE='simp_line_state';
-const staffRoles=['operator','identity','analyst','publisher','admin'];
-const navRole=(route:string,who:any)=>route.split('|').includes(who.role);
+const staffRoles=Object.keys(STAFF_ROLES);
+const navRole=(route:string,who:any)=>who.role==='admin'||route.split('|').includes(who.role);
 const COOKIE_MAX=12*3600;
 function cookies(req:IncomingMessage) {
   return Object.fromEntries((req.headers.cookie??'').split(';').map(s=>s.trim().split(/=(.*)/s,2)).filter(pair=>pair.length===2));
@@ -23,7 +24,7 @@ function setCookie(res:ServerResponse, name:string, value:string, seconds:number
   res.setHeader('Set-Cookie',[...(Array.isArray(previous)?previous:[]),name+'='+value+'; Path=/; Max-Age='+seconds+'; HttpOnly; SameSite=Lax'+(tlsOrigin||process.env.VERCEL?'; Secure':'')]);
 }
 async function session(req:IncomingMessage, key:string) {
-  return await one(`SELECT s.*,u.role,u.label,u.org_id FROM sessions s LEFT JOIN staff u ON u.id=s.staff_id
+  return await one(`SELECT s.*,u.role,u.label,u.org_id,u.active AS staff_active FROM sessions s LEFT JOIN staff u ON u.id=s.staff_id
     LEFT JOIN participants p ON p.id=s.participant_id WHERE token_hash=? AND expires_at>? AND (p.id IS NULL OR p.status='active')`,
     digest(cookies(req)[key]??''),iso());
 }
@@ -40,7 +41,7 @@ async function person(req:IncomingMessage) {
 }
 async function staff(req:IncomingMessage, roles=staffRoles.join('|')) {
   const auth=await session(req,STAFF);
-  demand(auth?.staff_id,401,'STAFF_LOGIN_REQUIRED','請先登入管理後台。');
+  demand(auth?.staff_id&&auth.staff_active===1,401,'STAFF_LOGIN_REQUIRED','請先登入管理後台，或洽系統管理員確認帳號狀態。');
   demand(navRole(roles,auth),403,'ROLE_FORBIDDEN','您的角色沒有此操作權限。');
   return auth;
 }
@@ -247,6 +248,10 @@ async function auth(req:IncomingMessage,res:ServerResponse,path:string,method:st
     }
     return outcome;
   }
+  if (path==='/auth/admin/accounts'&&method==='GET') {
+    demand(demo,404,'NOT_FOUND','找不到介面。');
+    return {items:await all('SELECT id,label,role FROM staff WHERE active=1 ORDER BY id')};
+  }
   if (path==='/auth/admin/login' && method==='POST') {
     const input=await json(req);
     await tx(async ()=>await throttle('staff:ip:'+lookup(req.socket.remoteAddress??''),40,15*60000));
@@ -259,11 +264,15 @@ async function auth(req:IncomingMessage,res:ServerResponse,path:string,method:st
       const staffId=clean(verified.id,100);
       const org=clean(verified.org,50)||null;
       demand(!org||await one('SELECT id FROM org_units WHERE id=?',org),403,'ORG_FORBIDDEN','授權組織無效。');
-      await run(`INSERT INTO staff VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET label=excluded.label, role=excluded.role, org_id=excluded.org_id`,
+      demand(verified.role!=='admin'||!org,403,'ADMIN_SCOPE','系統管理員須具備全平台管理範圍。');
+      await run(`INSERT INTO staff(id,label,role,org_id) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+        label=CASE WHEN staff.access_managed=1 THEN staff.label ELSE excluded.label END,
+        role=CASE WHEN staff.access_managed=1 THEN staff.role ELSE excluded.role END,
+        org_id=CASE WHEN staff.access_managed=1 THEN staff.org_id ELSE excluded.org_id END`,
         staffId,clean(verified.label)||staffId,verified.role,org);
       who=await one('SELECT * FROM staff WHERE id=?',staffId);
     }
-    demand(who,401,'STAFF_DENIED','找不到授權帳號。');
+    demand(who&&who.active===1,401,'STAFF_DENIED','帳號不存在或已停用，請洽系統管理員。');
     if (cookies(req)[STAFF]) await run('DELETE FROM sessions WHERE token_hash=?',digest(cookies(req)[STAFF]));
     await attachSession(res,STAFF,who.id);
     await auditReq(who.id,'auth.staff.login',who.id);
@@ -488,6 +497,16 @@ async function administration(req:IncomingMessage,res:ServerResponse,path:string
   const who=await staff(req);
   const allowed=async (roles:string)=>await staff(req,roles);
   if (path==='/admin/me' && method==='GET') return {id:who.staff_id,label:who.label,role:who.role,org:who.org_id};
+  const accessRoute=path.match(/^\/admin\/staff(?:\/([^/]+))?$/);
+  if (accessRoute) {
+    await allowed('admin');
+    demand(!who.org_id,403,'ORG_FORBIDDEN','僅全平台系統管理員可維護後台權限。');
+    if (!accessRoute[1]&&method==='GET') return staffAccessList();
+    if ((!accessRoute[1]&&method==='POST')||(accessRoute[1]&&method==='PATCH')) {
+      return saveStaffAccess(accessRoute[1]?decodeURIComponent(accessRoute[1]):undefined,await json(req),who.staff_id);
+    }
+    throw new Problem(405,'METHOD','此操作方式不支援。');
+  }
   const locationRoute=path.match(/^\/admin\/residence-(cities|districts)(?:\/([^/]+))?$/);
   if (path==='/admin/residence-locations'||locationRoute) {
     await allowed('admin');
