@@ -535,6 +535,33 @@ test('version deletion enforces roles and references, audits removal and never r
   assert.equal(db.prepare('PRAGMA foreign_key_check').all().length,0);
 });
 
+test('retired versions disappear from participant lists and block submissions and invitations while retaining answers',async()=>{
+  const root=await login('admin');
+  const before=await call('/me/surveys',{jar:sample});
+  const historical=before.items.find(row=>row.id==='vegrun-follow-T0');
+  assert.ok(historical.response);
+  const saved=db.prepare('SELECT * FROM responses WHERE id=?').get(historical.response.id);
+  const assigned=db.prepare('SELECT version_id FROM event_surveys WHERE id=?').get(historical.id).version_id;
+  assert.notEqual(assigned,historical.versionId);
+  await call('/admin/survey-versions/'+historical.versionId+'/retire',{jar:root,body:{}});
+  assert.ok(!(await call('/me/surveys',{jar:sample})).items.some(row=>row.id===historical.id));
+  assert.equal((await call('/event-surveys/'+historical.id+'/responses',{jar:sample,body:{versionId:historical.versionId,answers:historical.response.answers},expect:403})).error.code,'SURVEY_INACTIVE');
+  assert.deepEqual(db.prepare('SELECT * FROM responses WHERE id=?').get(saved.id),saved);
+  for(const program of ['VGR','EARTH','VEG']) {
+    const version=program+'-F30-1';
+    const affected=db.prepare('SELECT id FROM event_surveys WHERE version_id=?').all(version).map(row=>row.id);
+    assert.ok((await call('/me/surveys',{jar:sample})).items.some(row=>affected.includes(row.id)));
+    await call('/admin/survey-versions/'+version+'/retire',{jar:root,body:{}});
+    assert.ok(!(await call('/me/surveys',{jar:sample})).items.some(row=>affected.includes(row.id)));
+    assert.equal((await call('/event-surveys/'+affected[0]+'/responses',{jar:sample,body:{versionId:version,answers:{}},expect:403})).error.code,'SURVEY_INACTIVE');
+  }
+  const invitationSurvey=db.prepare("SELECT j.survey_id,s.version_id FROM invitations i JOIN recipients r ON r.id=i.recipient_id JOIN jobs j ON j.id=r.job_id JOIN event_surveys s ON s.id=j.survey_id WHERE i.token_hash=?").get(createHash('sha256').update('uat-invite').digest('hex'));
+  await call('/admin/survey-versions/'+invitationSurvey.version_id+'/retire',{jar:root,body:{}});
+  assert.equal((await call('/me/invitations/open',{jar:sample,body:{token:'uat-invite'},expect:403})).error.code,'SURVEY_INACTIVE');
+  assert.ok((await call('/me/surveys',{jar:sample})).items.length>0);
+  assert.ok((await call('/admin/survey-versions?status=retired',{jar:root})).items.some(row=>row.status==='retired'));
+});
+
 test('Both app entry points and their same-origin assets are served',async()=>{
   for(const path of ['/','/admin']) {
     const response=await fetch(origin+path);

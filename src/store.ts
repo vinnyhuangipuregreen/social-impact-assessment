@@ -72,7 +72,7 @@ export async function getEvent(eventId:string) {
   return event;
 }
 export async function getSurvey(surveyId:string) {
-  const survey=await one(`SELECT s.*,v.schema_json,v.version,e.program,e.title,e.status AS event_status,e.org_id,e.timezone,e.anchor_type
+  const survey=await one(`SELECT s.*,v.schema_json,v.version,v.status AS version_status,e.program,e.title,e.status AS event_status,e.org_id,e.timezone,e.anchor_type
     FROM event_surveys s JOIN survey_versions v ON v.id=s.version_id JOIN events e ON e.id=s.event_id WHERE s.id=?`,surveyId);
   demand(survey,404,'SURVEY_NOT_FOUND','找不到這份問卷。');
   return survey;
@@ -88,6 +88,7 @@ export function windowFor(survey:any, registration:any) {
 }
 
 export async function eligibility(survey:any, person:string, now=iso(), notification=false, checkTime=true) {
+  if (survey.version_status!=='published') return '問卷版本已停用';
   if (!['published','completed'].includes(survey.event_status)) return '場次已關閉';
   const registration = await enrollment(survey.event_id,person);
   if(survey.stage==='STAFF') {

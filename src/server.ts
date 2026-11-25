@@ -425,10 +425,12 @@ async function participant(req:IncomingMessage,res:ServerResponse,path:string,me
   }
   if (path==='/me/surveys' && method==='GET') {
     const owner=await person(req);
-    const rows=await all(`SELECT s.id FROM event_surveys s JOIN events e ON e.id=s.event_id WHERE e.status<>'draft' AND
+    const rows=await all(`SELECT s.id FROM event_surveys s JOIN events e ON e.id=s.event_id JOIN survey_versions v ON v.id=s.version_id
+      WHERE e.status<>'draft' AND v.status='published' AND NOT EXISTS(SELECT 1 FROM responses r JOIN survey_versions rv ON rv.id=r.version_id
+        WHERE r.event_survey_id=s.id AND r.participant_id=? AND r.effective=1 AND rv.status<>'published') AND
       ((s.stage<>'STAFF' AND EXISTS(SELECT 1 FROM enrollments en WHERE en.event_id=s.event_id AND en.participant_id=? AND en.status<>'cancelled')) OR
        (s.stage='STAFF' AND (EXISTS(SELECT 1 FROM event_cadres c WHERE c.event_id=s.event_id AND c.participant_id=? AND c.active=1) OR
-        EXISTS(SELECT 1 FROM responses r WHERE r.event_survey_id=s.id AND r.participant_id=? AND r.effective=1)))) ORDER BY s.opens_at DESC,s.id`,owner,owner,owner);
+        EXISTS(SELECT 1 FROM responses r WHERE r.event_survey_id=s.id AND r.participant_id=? AND r.effective=1)))) ORDER BY s.opens_at DESC,s.id`,owner,owner,owner,owner);
     return page(await Promise.all(rows.map(async row=>{
       const s=await getSurvey(row.id), en=await enrollment(s.event_id,owner), range=windowFor(s,en);
       const response=await one(`SELECT r.id,r.answers_json,r.submitted_at,r.version_id,v.version,v.schema_json FROM responses r JOIN survey_versions v ON v.id=r.version_id WHERE r.event_survey_id=? AND r.participant_id=? AND r.effective=1`,s.id,owner);
@@ -441,11 +443,15 @@ async function participant(req:IncomingMessage,res:ServerResponse,path:string,me
   }
   const respond=path.match(/^\/event-surveys\/([^/]+)\/responses$/);
   if (respond&&method==='POST') {
-    const owner=await person(req), input=await json(req), survey=await getSurvey(respond[1]);
+    const owner=await person(req), input=await json(req);
     return await tx(async ()=>{
+      const survey=await getSurvey(respond[1]);
+      demand(survey.version_status==='published',403,'SURVEY_INACTIVE','問卷版本已停用。');
       const response=await one('SELECT * FROM responses WHERE event_survey_id=? AND participant_id=? AND effective=1',survey.id,owner);
       demand(input.versionId===(response?.version_id??survey.version_id),409,'VERSION_MISMATCH','問卷版本已更新，請重新開啟。');
-      const schema=JSON.parse(response?(await one('SELECT schema_json FROM survey_versions WHERE id=?',response.version_id)).schema_json:survey.schema_json);
+      const version=response?await one('SELECT schema_json,status FROM survey_versions WHERE id=?',response.version_id):null;
+      demand(!version||version.status==='published',403,'SURVEY_INACTIVE','問卷版本已停用。');
+      const schema=JSON.parse(version?.schema_json??survey.schema_json);
       const answers=validAnswers(schema,input.answers);
       const packed=JSON.stringify(answers);
       if (response) {
@@ -470,6 +476,7 @@ async function participant(req:IncomingMessage,res:ServerResponse,path:string,me
         JOIN jobs j ON j.id=r.job_id WHERE i.token_hash=?`,digest(clean(input.token,150)));
       demand(invite&&invite.participant_id===owner,403,'INVITATION_OWNER','此邀請連結不屬於目前登入帳號。');
       demand(invite.expires_at>iso(),409,'INVITATION_EXPIRED','此邀請連結已過期。');
+      demand((await getSurvey(invite.survey_id)).version_status==='published',403,'SURVEY_INACTIVE','問卷版本已停用。');
       await run('UPDATE invitations SET opened_at=COALESCE(opened_at,?) WHERE token_hash=?',iso(),invite.token_hash);
       return {surveyId:invite.survey_id};
     });
