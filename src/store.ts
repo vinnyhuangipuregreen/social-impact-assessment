@@ -28,6 +28,12 @@ export function open(value: string) {
   return Buffer.concat([cipher.update(content),cipher.final()]).toString('utf8');
 }
 
+export async function nextSurveyVersion(program:string,stage:string) {
+  const current=(await one('SELECT COALESCE(MAX(version),0) AS n FROM survey_versions WHERE program=? AND stage=?',program,stage)).n;
+  const deleted=await one('SELECT value FROM app_settings WHERE key=?','survey_version_highwater:'+program+':'+stage);
+  return Math.max(current,Number(deleted?.value??0))+1;
+}
+
 await exec('CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY);');
 
 const folder=new URL('../migrations/', import.meta.url);
@@ -107,11 +113,13 @@ await tx(async ()=>{
   if (current && current!==mode) throw new Error('The database must match the configured Demo or Service mode.');
   if (!current && !demo && await one("SELECT id FROM staff WHERE id='operator'")) throw new Error('Do not reuse a Demo database for service mode.');
   await run("INSERT OR IGNORE INTO app_settings VALUES ('mode',?)",mode);
+  const deletedVersions=new Set((await all("SELECT key FROM app_settings WHERE key GLOB 'deleted_survey_version:*'")).map(row=>row.key.slice('deleted_survey_version:'.length)));
   for (const p of PROGRAMS) {
     await run('INSERT OR IGNORE INTO programs VALUES (?,?,?,?,?)',p.code,p.title,p.summary,p.metric,p.unit);
     for (const stage of Object.keys(STAGES)) {
       if(stage==='STAFF') continue;
       if (stage==='T1A' && p.code==='VEG') continue;
+      if(deletedVersions.has(p.code+'-'+stage+'-1')) continue;
       await run('INSERT OR IGNORE INTO survey_versions VALUES (?,?,?,?,?,?,?,?)',
         p.code+'-'+stage+'-1',p.code,stage,1,'published',JSON.stringify(questions(p.code,stage)),iso(),iso());
     }
@@ -126,7 +134,8 @@ await tx(async ()=>{
     for(const program of PROGRAMS) {
       for(const stage of ASSESSMENT_STAGES) {
         const versionId=program.code+'-'+stage+'-assessment-v2';
-        const next=(await one('SELECT COALESCE(MAX(version),0)+1 AS n FROM survey_versions WHERE program=? AND stage=?',program.code,stage)).n;
+        if(deletedVersions.has(versionId)) continue;
+        const next=await nextSurveyVersion(program.code,stage);
         await run('INSERT OR IGNORE INTO survey_versions VALUES (?,?,?,?,?,?,?,?)',versionId,program.code,stage,next,'published',JSON.stringify(assessmentQuestions(stage)),iso(),iso());
         for(const event of await all("SELECT * FROM events WHERE program=? AND status IN ('draft','published','completed')",program.code)) {
           const current=await one('SELECT * FROM event_surveys WHERE event_id=? AND stage=?',event.id,stage);

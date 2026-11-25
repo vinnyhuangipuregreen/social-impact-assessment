@@ -2,6 +2,8 @@
 
 ## 新版評估問卷
 
+- `DELETE /admin/survey-versions/{id}` 供活動營運、審校發布及系統管理員刪除未被引用的版本。草稿、已發布、已停用皆可刪除；仍有場次綁定、任何歷史答卷（含已失效回覆）或成果快照引用時回傳 `409 VERSION_IN_USE`。刪除保留稽核、不重用版本號，預設版本也不會在重啟時重建。
+
 - `GET /config` 提供 `assessmentTemplates`（T0、T1B、T2、T3、STAFF）與 `collectionTimeline`，三個方案共用題目。T2 與 T3 的題目與選項完全相同。
 - 題型為 `integer`、`number`、`choice`、`multichoice`、`text`。複選答案為不重複的選項陣列，數值須在上下限內，文字遵守 `maxLength`；未知欄位（包括另填姓名、手機或 Email）會拒絕。
 - `GET /me/surveys` 對已提交答卷回傳其歷史 `versionId` 與 `form`；未填答者取得目前綁定的新版。基線提交的 `tracking_consent` 會同步目前方案追蹤同意。身分使用驗證手機所連結的 participant ID，使用者不能指定他人的 participant ID。

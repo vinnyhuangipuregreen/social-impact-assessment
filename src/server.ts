@@ -6,7 +6,7 @@ import sharp from 'sharp';
 import { extname } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { DAY, FOLLOW, NOTICE, NOTICE_TEXT, PROGRAMS, STAGES, Problem, date, demand, iso, normalizeCard, normalizePhone, plannedWindow, validAnswers } from './domain.ts';
-import { all, audit, bind, consent, createParticipant, demo, digest, eligibility, enrollment, getEvent, getSurvey, id, lookup, one, open, phoneMask, run, seal, token, tx, windowFor } from './store.ts';
+import { all, audit, bind, consent, createParticipant, demo, digest, eligibility, enrollment, getEvent, getSurvey, id, lookup, one, open, phoneMask, run, seal, token, tx, windowFor, nextSurveyVersion } from './store.ts';
 import { audience, cancelJob, enqueue, inOrg, jobStats, processQueue, provider, recordConsent, report, scope, tlsOrigin } from './operations.ts';
 import { residenceLocations, resolveResidence, saveResidenceLocation } from './residence.ts';
 import { STAFF_ROLES, staffAccessList, saveStaffAccess } from './staff-access.ts';
@@ -709,11 +709,29 @@ async function administration(req:IncomingMessage,res:ServerResponse,path:string
         ...(['integer','number'].includes(q.type)?{min:q.min,max:q.max}:q.type==='text'?{maxLength:q.maxLength}:{options:q.options})};
     });
     return await tx(async ()=>{
-      const version=(await one('SELECT COALESCE(MAX(version),0)+1 AS n FROM survey_versions WHERE program=? AND stage=?',input.program,input.stage)).n;
+      const version=await nextSurveyVersion(input.program,input.stage);
       const key=id();
       await run('INSERT INTO survey_versions VALUES (?,?,?,?,?,?,?,NULL)',key,input.program,input.stage,version,'draft',JSON.stringify(schema),iso());
       await auditReq(who.staff_id,'survey.version.create',key,{version});
       return {id:key,version,status:'draft'};
+    });
+  }
+  const versionDelete=path.match(/^\/admin\/survey-versions\/([^/]+)$/);
+  if(versionDelete&&method==='DELETE') {
+    await allowed('operator|publisher');
+    return tx(async()=>{
+      const version=await one('SELECT * FROM survey_versions WHERE id=?',versionDelete[1]);
+      demand(version,404,'VERSION_NOT_FOUND','找不到此問卷版本，可能已刪除。');
+      const events=(await one('SELECT COUNT(*) AS n FROM event_surveys WHERE version_id=?',version.id)).n;
+      const responses=(await one('SELECT COUNT(*) AS n FROM responses WHERE version_id=?',version.id)).n;
+      const snapshots=(await all('SELECT report_json FROM snapshots')).filter(row=>JSON.parse(row.report_json).eventRows?.some(event=>event.program===version.program&&event.versions?.some(v=>v.stage===version.stage&&v.version===version.version))).length;
+      demand(!events&&!responses&&!snapshots,409,'VERSION_IN_USE','無法刪除：此版本仍有 '+events+' 個場次綁定、'+responses+' 份答卷、'+snapshots+' 份成果快照引用。請保留或停用此版本。');
+      await run(`INSERT INTO app_settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=CAST(MAX(CAST(app_settings.value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)`,
+        'survey_version_highwater:'+version.program+':'+version.stage,String(version.version));
+      await run('INSERT INTO app_settings VALUES (?,?)','deleted_survey_version:'+version.id,iso());
+      await run('DELETE FROM survey_versions WHERE id=?',version.id);
+      await auditReq(who.staff_id,'survey.version.delete',version.id,{program:version.program,stage:version.stage,version:version.version,status:version.status});
+      return {ok:true};
     });
   }
   const versionAction=path.match(/^\/admin\/survey-versions\/([^/]+)\/(publish|retire)$/);

@@ -42,6 +42,29 @@ test('an awaited transaction rolls back without absorbing another request',async
   } finally {rmSync(folder,{recursive:true,force:true});}
 });
 
+test('deleted standard versions are not recreated on startup',async()=>{
+  const folder=mkdtempSync(join(tmpdir(),'sia-deleted-version-'));
+  const storeUrl=new URL('../src/store.ts',import.meta.url).href;
+  const environment={SIMP_DB:join(folder,'test.sqlite'),SIMP_DEMO:'1'};
+  try {
+    const removed=await execute(`
+      const {run}=await import(${JSON.stringify(storeUrl)});
+      await run("DELETE FROM event_surveys WHERE version_id='EARTH-T1A-1'");
+      await run("DELETE FROM survey_versions WHERE id='EARTH-T1A-1'");
+      await run("INSERT INTO app_settings VALUES ('deleted_survey_version:EARTH-T1A-1','test')");
+      (await import(${JSON.stringify(moduleUrl)})).closeDatabase();
+    `,environment);
+    assert.equal(removed.status,0,removed.output);
+    const restarted=await execute(`
+      import assert from 'node:assert/strict';
+      const {one}=await import(${JSON.stringify(storeUrl)});
+      assert.equal(await one("SELECT id FROM survey_versions WHERE id='EARTH-T1A-1'"),undefined);
+      (await import(${JSON.stringify(moduleUrl)})).closeDatabase();
+    `,environment);
+    assert.equal(restarted.status,0,restarted.output);
+  } finally {rmSync(folder,{recursive:true,force:true});}
+});
+
 test('cloud configuration cannot silently fall back to a local database',async()=>{
   for(const environment of [
     {VERCEL:'1'},

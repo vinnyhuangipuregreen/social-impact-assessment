@@ -80,6 +80,8 @@
 .rating-options label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; padding: 4px 0; }
 .rating-options input { width: 16px; height: 16px; margin: 0; accent-color: var(--green); }
 .skill-ratings { grid-template-columns: repeat(auto-fit,minmax(min(100%,190px),1fr)); }
+.delete-version { color: #a43737; }
+.button.danger { background: #a43737; border-color: #a43737; color: #fff; }
 .admin-card { border-color: #dfe9ed; }
 .card-head { background: linear-gradient(90deg,#fff,#f9fcfb); }
 .kpi { border-color: #dfe9ed; background: #fff; }

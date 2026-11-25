@@ -250,10 +250,20 @@ export async function startAdmin(root,config) {
       table(['方案','階段','版本','作答欄位數','狀態','操作'],result.items.map(v=>[e(P(v.program)),e(stages[v.stage]),'v'+v.version,v.form.length,pill(v.status),
         rowActions(btn('查看','secondary small','data-view-ver="'+e(v.id)+'"'),
           can('operator')?btn('複製成草稿','quiet small','data-copy-ver="'+e(v.id)+'"'):'',
-          ['draft','published'].includes(v.status)?btn(v.status==='draft'?'發布':'停用','quiet small','data-ver-status="'+e(v.id)+'"'):'')]))+pagination(result,'versions'));
+          ['draft','published'].includes(v.status)?btn(v.status==='draft'?'發布':'停用','quiet small','data-ver-status="'+e(v.id)+'"'):'',
+          can('operator|publisher')?btn('刪除','quiet small delete-version','data-delete-ver="'+e(v.id)+'"'):'')]))+pagination(result,'versions'));
     bindForms(target,'form',async data=>{versionProgram=data.get('program');versionStage=data.get('stage');delete pageState.versions;await render();});
     bind(target,'[data-new-ver]',()=>questionEditor());
     bind(target,'[data-copy-ver]',el=>questionEditor(result.items.find(v=>v.id===el.dataset.copyVer)));
+    bind(target,'[data-delete-ver]',el=>{
+      const version=result.items.find(v=>v.id===el.dataset.deleteVer);
+      const box=modal('刪除問卷版本','<form class="form-stack"><strong>'+e(P(version.program)+' · '+stages[version.stage]+' · v'+version.version)+'</strong><p>刪除後無法復原；已有場次、答卷或成果快照引用時會阻擋刪除。確定要刪除此版本？</p>'+errorSlot+
+        '<div class="row-wrap">'+btn('取消','secondary','data-cancel-delete')+submit('確認刪除','danger')+'</div></form>');
+      bind(box,'[data-cancel-delete]',close);
+      bindForms(box,'form',async()=>{
+        await api('/admin/survey-versions/'+encodeURIComponent(version.id),{method:'DELETE'});delete pageState.versions;close();await render();message('問卷版本已刪除。');
+      });
+    });
     bind(target,'[data-view-ver]',el=>{
       const v=result.items.find(v=>v.id===el.dataset.viewVer);
       modal(P(v.program)+' · '+stages[v.stage],' <p class="note">v'+v.version+'</p>'+table(['題目','代碼','資料格式','指標版本'],v.form.map(q=>[e(q.label),e(q.key),

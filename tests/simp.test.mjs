@@ -505,6 +505,36 @@ test('all three assessment packs use phone identity, consent, typed answers and 
   assert.equal((await call('/event-surveys/'+historical.id+'/responses',{jar:sample,body:{versionId:historical.versionId,answers:historical.response.answers}})).responseId,historical.response.id);
 });
 
+test('version deletion enforces roles and references, audits removal and never reuses a deleted number',async()=>{
+  const root=await login('admin'),analyst=await login('analyst'),publisher=await login('publisher');
+  const body={program:'VGR',stage:'T0',form:[{key:'delete_check',label:'刪除驗收',type:'integer',min:0,max:5,required:false}]};
+  const draft=await call('/admin/survey-versions',{jar:staff,body});
+  await call('/admin/survey-versions/'+draft.id,{jar:analyst,method:'DELETE',expect:403});
+  await call('/admin/survey-versions/'+draft.id,{jar:sample,method:'DELETE',expect:401});
+  await call('/admin/survey-versions/missing-version',{jar:root,method:'DELETE',expect:404});
+  await call('/admin/survey-versions/'+draft.id,{jar:staff,method:'DELETE'});
+  assert.equal(db.prepare('SELECT id FROM survey_versions WHERE id=?').get(draft.id),undefined);
+  assert.ok((await call('/admin/audit?q=survey.version.delete',{jar:root})).items.some(row=>row.target===draft.id));
+  await call('/admin/survey-versions/'+draft.id,{jar:root,method:'DELETE',expect:404});
+  const next=await call('/admin/survey-versions',{jar:staff,body});assert.ok(next.version>draft.version);
+  await call('/admin/survey-versions/'+next.id+'/publish',{jar:publisher,body:{}});
+  await call('/admin/survey-versions/'+next.id+'/retire',{jar:publisher,body:{}});
+  await call('/admin/survey-versions/'+next.id,{jar:publisher,method:'DELETE'});
+  const bound=await call('/admin/survey-versions/VGR-T0-assessment-v2',{jar:root,method:'DELETE',expect:409});
+  assert.equal(bound.error.code,'VERSION_IN_USE');
+  const historical=await call('/admin/survey-versions',{jar:staff,body});
+  db.prepare('INSERT INTO responses(id,event_survey_id,participant_id,version_id,answers_json,submitted_at,effective) VALUES (?,?,?,?,?,?,0)')
+    .run('delete-history','vegrun-T0',sample.me.participant_id,historical.id,'{"delete_check":2}',new Date().toISOString());
+  const used=await call('/admin/survey-versions/'+historical.id,{jar:root,method:'DELETE',expect:409});
+  assert.match(used.error.message,/1 份答卷/);
+  const snapshotVersion=await call('/admin/survey-versions',{jar:staff,body});
+  db.prepare("INSERT INTO snapshots VALUES (?,'operator',NULL,'vegrun','pending',?,NULL,'刪除保護驗收','[]',?)")
+    .run('delete-snapshot',new Date().toISOString(),JSON.stringify({eventRows:[{program:'VGR',versions:[{stage:'T0',version:snapshotVersion.version}]}]}));
+  const snapshot=await call('/admin/survey-versions/'+snapshotVersion.id,{jar:root,method:'DELETE',expect:409});
+  assert.match(snapshot.error.message,/1 份成果快照/);
+  assert.equal(db.prepare('PRAGMA foreign_key_check').all().length,0);
+});
+
 test('Both app entry points and their same-origin assets are served',async()=>{
   for(const path of ['/','/admin']) {
     const response=await fetch(origin+path);
