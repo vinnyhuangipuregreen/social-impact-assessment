@@ -120,12 +120,14 @@ export async function startPublic(root,config) {
       '<p class="header-purpose">綠色公益基金會<span>參與行動 × 記錄改變 × 看見影響</span></p>'+
       '<div class="nav-side">'+(!signed()?btn('登入／註冊','secondary nav-login','data-login','user'):
        '<a class="button secondary nav-login" href="#profile">'+icon('user',16)+'個人資料</a>'+btn('登出','quiet logout','data-logout'))+
-      '</div><button type="button" class="icon-button mobile-toggle" aria-label="開啟選單" aria-expanded="false">'+icon('menu',22)+'</button>'+
-      '<nav aria-label="主要導覽">'+nav.map(([key,label],index)=>'<a href="#'+key+'" '+(route===key?'aria-current="page"':'')+'>'+icon(['grid','calendar','doc','chart'][index],18)+e(label)+'</a>').join('')+'<a href="/admin">'+icon('shield',18)+'管理後台</a></nav></div></header>'+
+      '</div><button type="button" class="icon-button mobile-toggle" aria-label="開啟選單" aria-controls="public-navigation" aria-expanded="false">'+icon('menu',22)+'</button>'+
+      '<nav id="public-navigation" aria-label="主要導覽">'+nav.map(([key,label],index)=>'<a href="#'+key+'" '+(route===key?'aria-current="page"':'')+'>'+icon(['grid','calendar','doc','chart'][index],18)+e(label)+'</a>').join('')+'<a href="/admin">'+icon('shield',18)+'管理後台</a></nav></div></header>'+
       '<main id="main">'+content()+'</main><footer class="site-footer"><div class="container row-between"><a class="brand-link" href="#home">'+brand()+'</a>'+
       '<p>綠色公益基金會'+(config.demo?' · 示範環境':'')+'</p><a href="#profile">資料同意與權利</a></div></footer>';
     const toggle=root.querySelector('.mobile-toggle');
-    toggle.onclick=()=>{ const visible=toggle.getAttribute('aria-expanded')==='true'; toggle.setAttribute('aria-expanded',String(!visible)); root.querySelector('.site-header').classList.toggle('mobile-open',!visible); };
+    const setMenu=active=>{toggle.setAttribute('aria-expanded',String(active));toggle.setAttribute('aria-label',active?'關閉選單':'開啟選單');root.querySelector('.site-header').classList.toggle('mobile-open',active);};
+    toggle.onclick=()=>setMenu(toggle.getAttribute('aria-expanded')!=='true');
+    root.onkeydown=event=>{if(event.key==='Escape'&&toggle.getAttribute('aria-expanded')==='true'){setMenu(false);toggle.focus();}};
     bind(root,'[data-login]',()=>login());
     bind(root,'[data-logout]',async()=>{await api('/auth/logout',{body:{}});await refresh();goto('home');message('已登出。');});
     bind(root,'[data-program]',el=>{eventFilter='';programFilter=el.dataset.program;goto('activities');});

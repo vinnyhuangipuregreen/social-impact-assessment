@@ -46,8 +46,8 @@ export async function startAdmin(root,config) {
   const stateTitle=(status)=>pill(status,status==='pending'?'待審核':undefined);
   const backButton='<a href="/" class="button secondary">'+icon('diagonal',17)+'開啟活動前台</a>';
   const numbered=(title)=>'<span class="column-title">'+e(title)+'</span>';
-  const table=(headers,rows)=>rows.length?'<div class="table-wrap"><table><thead><tr>'+headers.map(v=>'<th scope="col">'+e(v)+'</th>').join('')+'</tr></thead><tbody>'+
-    rows.map(row=>'<tr>'+row.map(cell=>'<td>'+cell+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>':empty('目前沒有符合條件的紀錄');
+  const table=(headers,rows)=>rows.length?'<div class="table-wrap"><table class="responsive-table" role="table"><thead><tr role="row">'+headers.map(v=>'<th scope="col">'+e(v)+'</th>').join('')+'</tr></thead><tbody>'+
+    rows.map(row=>'<tr role="row">'+row.map((cell,index)=>'<td role="cell" data-label="'+e(headers[index]||'操作')+'"><div class="cell-value">'+cell+'</div></td>').join('')+'</tr>').join('')+'</tbody></table></div>':empty('目前沒有符合條件的紀錄');
   const cols=(...content)=>'<div class="form-grid">'+content.join('')+'</div>';
   const selEvent=(selected,attr='')=>select('eventId',o('','請選擇場次')+eventOptions(selected),attr);
   const rowActions=(...actions)=>'<div class="row-wrap actions">'+actions.join('')+'</div>';
@@ -90,15 +90,20 @@ export async function startAdmin(root,config) {
     const route=selectedRoute();
     const links=pages.filter(page=>can(page[3]));
     if (!root.classList.contains('admin-root')) root.classList.add('admin-root');
-    root.innerHTML='<div class="admin-shell"><aside class="admin-sidebar" aria-label="管理選單"><a class="brand-link" href="/admin">'+brand(true)+'</a>'+
+    root.innerHTML='<div class="admin-shell"><aside id="admin-navigation" class="admin-sidebar" aria-label="管理選單"><a class="brand-link" href="/admin">'+brand(true)+'</a><button type="button" class="icon-button sidebar-close" aria-label="關閉管理選單">'+icon('close')+'</button>'+
       '<span class="sidebar-kicker">管理工作台</span><nav>'+links.map(([key,label,symbol])=>'<a href="#'+key+'" '+(route===key?'class="active" aria-current="page"':'')+'>'+icon(symbol,19)+e(label)+'</a>').join('')+'</nav>'+
-      '<div class="sidebar-foot"><span class="profile-square">'+icon('user')+'</span><div><strong>'+e(me.label)+'</strong><small>'+e(staffTitle())+'</small></div></div></aside>'+
-      '<div class="admin-frame"><header class="admin-topbar"><div class="row-wrap"><button class="icon-button admin-mobile-toggle" type="button" aria-label="管理選單" aria-expanded="false">'+icon('menu')+'</button><span>管理後台</span><span class="crumb">/</span><strong>'+e(pages.find(p=>p[0]===route)?.[1])+'</strong></div>'+
+      '<div class="sidebar-foot"><span class="profile-square">'+icon('user')+'</span><div><strong>'+e(me.label)+'</strong><small>'+e(staffTitle())+'</small></div></div></aside><button type="button" class="sidebar-backdrop" aria-label="關閉選單背景" tabindex="-1"></button>'+
+      '<div class="admin-frame"><header class="admin-topbar"><div class="row-wrap"><button class="icon-button admin-mobile-toggle" type="button" aria-label="管理選單" aria-controls="admin-navigation" aria-expanded="false">'+icon('menu')+'</button><span>管理後台</span><span class="crumb">/</span><strong>'+e(pages.find(p=>p[0]===route)?.[1])+'</strong></div>'+
       '<div class="row-wrap">'+(config.demo?'<span class="mode"><span></span> Demo 模式</span>':'')+'<a href="/" class="back-top">活動前台 '+icon('diagonal',15)+'</a>'+btn('登出','quiet small','data-logout')+'</div></header>'+
       '<main id="main" class="admin-main"><div class="loading" aria-busy="true">正在讀取資料…</div></main></div></div>';
     bind(root,'[data-logout]',async()=>{try{await api('/auth/admin/logout',{body:{}});me=null;await render();}catch(error){message(error.message,'error');}});
     const menu=root.querySelector('.admin-mobile-toggle');
-    menu.onclick=()=>{const active=root.querySelector('.admin-shell').classList.toggle('show-sidebar');menu.setAttribute('aria-expanded',String(active));};
+    const setMenu=active=>{root.querySelector('.admin-shell').classList.toggle('show-sidebar',active);menu.setAttribute('aria-expanded',String(active));};
+    menu.onclick=()=>setMenu(menu.getAttribute('aria-expanded')!=='true');
+    const closeMenu=()=>{setMenu(false);menu.focus();};
+    root.querySelector('.sidebar-backdrop').onclick=closeMenu;
+    root.querySelector('.sidebar-close').onclick=closeMenu;
+    root.onkeydown=event=>{if(event.key==='Escape'&&menu.getAttribute('aria-expanded')==='true'){setMenu(false);menu.focus();}};
     const target=root.querySelector('#main');
     try {
       if (can('operator|analyst|publisher')) events=await items('/admin/events');

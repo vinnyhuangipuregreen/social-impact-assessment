@@ -569,7 +569,7 @@ test('Both app entry points and their same-origin assets are served',async()=>{
     assert.match(response.headers.get('content-type'),/text\/html/);
     assert.match(await response.text(),/src="\/app.js"/);
   }
-  const assets=await Promise.all(['/app.js','/admin.js','/public.js','/style.css','/assets/hero.webp'].map(path=>fetch(origin+path)));
+  const assets=await Promise.all(['/app.js','/admin.js','/public.js','/style.css','/portal.css','/responsive.css','/assets/hero.webp'].map(path=>fetch(origin+path)));
   assert.ok(assets.every(response=>response.ok));
   assert.match(assets.at(-1).headers.get('content-type'),/image\/webp/);
 });
